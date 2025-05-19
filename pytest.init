@@ -1,0 +1,10 @@
+[pytest]
+env =
+    # ---- required by app.core.config.Settings -----------------
+    MONGO_USER=test
+    MONGO_PASSWORD=test
+    DB_NAME=testdb
+    AZURE_OPENAI_KEY=dummy
+    AZURE_OPENAI_BASE=https://dummy.endpoint
+    # Anything else you mark as required can be stubbed here
+

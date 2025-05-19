@@ -1,0 +1,159 @@
+# Python to Linux Web App on Azure
+# Build your Python project and deploy it to Azure as a Linux Web App.
+# Change python version to one thats appropriate for your application.
+# https://docs.microsoft.com/azure/devops/pipelines/languages/python
+
+trigger:
+- main
+- develop
+- release/*
+
+variables:
+  # Azure Resource Manager connection created during pipeline creation
+  azureServiceConnectionId: 'Sparc-Azure'
+
+  # Dev App Settings
+  devWebAppName: 'app-ragbackend-dev-wus-001'
+
+  # Stage App Settings
+  stageWebAppName: 'api-ragbackend-stg-wus-001'
+
+  # Agent VM image name
+  vmImageName: 'ubuntu-latest'
+
+  # Project root folder. Point to the folder containing manage.py file.
+  projectRoot: $(System.DefaultWorkingDirectory)
+
+  pythonVersion: '3.12'
+
+stages:
+- stage: Build
+  displayName: Build stage
+  jobs:
+  - job: BuildJob
+    pool:
+      vmImage: $(vmImageName)
+    steps:
+    - task: UsePythonVersion@0
+      inputs:
+        versionSpec: '$(pythonVersion)'
+      displayName: 'Use Python $(pythonVersion)'
+
+    # Install dependencies without virtual environment
+    - script: |
+        python -m pip install --upgrade pip
+        pip install --no-cache-dir -r requirements.txt
+      workingDirectory: $(projectRoot)
+      displayName: "Install requirements (No venv)"
+
+    - script: |
+        python -m pip install gunicorn
+        which gunicorn
+        gunicorn --version
+      workingDirectory: $(projectRoot)
+      displayName: "Verify Gunicorn Installation"
+
+    # Remove unnecessary files before zipping
+    - script: |
+        echo "Cleaning up unnecessary files..."
+        find $(projectRoot) -name ".gitignore" -delete
+        find $(projectRoot) -name "azure-pipelines.yml" -delete
+        find $(projectRoot) -name "README.md" -delete        
+        find $(projectRoot) -name "__pycache__" -exec rm -rf {} +
+        rm -rf $(projectRoot)/antenv  # Remove virtual environment folder
+        rm -rf $(projectRoot)/.git  # Remove .git folder
+      displayName: "Clean Up Project Before Packaging"
+
+    # Archive only the necessary files
+    - task: ArchiveFiles@2
+      displayName: 'Archive files'
+      inputs:
+        rootFolderOrFile: '$(projectRoot)'
+        includeRootFolder: false
+        archiveType: zip
+        archiveFile: $(Build.ArtifactStagingDirectory)/$(Build.BuildId).zip
+        replaceExistingArchive: true
+
+    - upload: $(Build.ArtifactStagingDirectory)/$(Build.BuildId).zip
+      displayName: 'Upload package'
+      artifact: drop
+
+- stage: Deploy_Dev
+  displayName: 'Deploy to Dev'
+  dependsOn: Build
+  condition: and(succeeded(), startsWith(variables['build.sourceBranch'], 'refs/heads/develop'))
+  jobs:
+  - deployment: DeployDev
+    displayName: 'Deploy to Backend API - Dev'
+    environment:
+      name: ragmodel_dev
+    strategy:
+     runOnce:
+        deploy:
+          steps:
+
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: '$(pythonVersion)'
+            displayName: 'Use Python version'
+
+          - task: AzureAppServiceManage@0
+            inputs:
+              azureSubscription: '$(azureServiceConnectionId)'
+              Action: 'Stop Azure App Service'
+              WebAppName: '$(devWebAppName)'
+
+          - task: AzureWebApp@1
+            displayName: 'Deploy Azure Web App : app-ragbackend-dev-wus-001'
+            inputs:
+              azureSubscription: '$(azureServiceConnectionId)'
+              appType: 'webAppLinux'
+              appName: '$(devWebAppName)'
+              package: '$(Pipeline.Workspace)/drop/$(Build.BuildId).zip'
+              startUpCommand: 'pip install --no-cache-dir -r requirements.txt && pip list && gunicorn -w 2 -k uvicorn.workers.UvicornWorker -b 0.0.0.0:8000 main:app'
+
+          - task: AzureAppServiceManage@0
+            inputs:
+              azureSubscription: '$(azureServiceConnectionId)'
+              Action: 'Start Azure App Service'
+              WebAppName: '$(devWebAppName)'
+
+- stage: Deploy_Stage
+  displayName: 'Deploy to Stage'
+  dependsOn: Build
+  condition: and(succeeded(), startsWith(variables['build.sourceBranch'], 'refs/heads/release'))
+  jobs:
+  - deployment: DeployDev
+    displayName: 'Deploy to Backend API - Stage'
+    environment:
+      name: ragmodel_stage
+    strategy:
+     runOnce:
+        deploy:
+          steps:
+
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: '$(pythonVersion)'
+            displayName: 'Use Python version'
+
+          - task: AzureAppServiceManage@0
+            inputs:
+              azureSubscription: '$(azureServiceConnectionId)'
+              Action: 'Stop Azure App Service'
+              WebAppName: '$(stageWebAppName)'
+
+          - task: AzureWebApp@1
+            displayName: 'Deploy Azure Web App : api-ragbackend-stg-wus-001'
+            inputs:
+              azureSubscription: '$(azureServiceConnectionId)'
+              appType: 'webAppLinux'
+              appName: '$(stageWebAppName)'
+              package: '$(Pipeline.Workspace)/drop/$(Build.BuildId).zip'
+              startUpCommand: 'pip install --no-cache-dir -r requirements.txt && pip list && gunicorn -w 2 -k uvicorn.workers.UvicornWorker -b 0.0.0.0:8000 main:app'
+
+          - task: AzureAppServiceManage@0
+            inputs:
+              azureSubscription: '$(azureServiceConnectionId)'
+              Action: 'Start Azure App Service'
+              WebAppName: '$(stageWebAppName)'

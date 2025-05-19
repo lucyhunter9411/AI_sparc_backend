@@ -1,0 +1,4 @@
+pytest
+pytest-asyncio
+httpx             # pulled automatically by fastapi[test] but explicit is fine
+websockets        # optional, handy for more advanced socket tests later
