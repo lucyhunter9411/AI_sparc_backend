@@ -6,6 +6,10 @@ from langchain.prompts import PromptTemplate
 from functools import lru_cache
 from typing import Any
 from app.services import llm as _raw    # existing module with llm_models etc.
+import requests
+import os 
+
+OPENAI_API_KEY = os.getenv("OPENAI_KEY", "")
 
 # We keep the signature minimal – later we can evolve it.
 def build_chat_prompt(
@@ -95,3 +99,34 @@ def predict(prompt: str, *, model_name: str | None = None, **kwargs: Any) -> str
     Extra kwargs pass straight through.
     """
     return get_llm(model_name).predict(prompt, **kwargs)
+
+
+def generate_openai_response(prompt: str) -> str:
+    url = "https://api.openai.com/v1/chat/completions"
+
+    headers = {
+        "Authorization": f"Bearer {OPENAI_API_KEY}",
+        "Content-Type": "application/json"
+    }
+
+    data = {
+        "model": "gpt-3.5-turbo",
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.7
+    }
+
+    try:
+        print("⏳ Sending request to OpenAI...")
+        response = requests.post(url, headers=headers, json=data, timeout=10)  # Force timeout after 10s
+        response.raise_for_status()
+        print("✅ Response received")
+        print("🔍 Full Response JSON:", response.json())
+        print("🔍 Full Response JSON:", response.json()['choices'][0]['message']['content'].strip())
+        return response.json()['choices'][0]['message']['content'].strip()
+    except requests.exceptions.Timeout:
+        print("❌ Request timed out!")
+        return "Request timed out."
+    except requests.exceptions.RequestException as e:
+        print(f"❌ Request error: {e}")
+        print("Response text:", getattr(e.response, 'text', 'No response body'))
+        return "Request failed."

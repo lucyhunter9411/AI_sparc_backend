@@ -28,6 +28,7 @@ import wave
 from app.services.stt_service import transcribe_audio
 from app.utils.audio import generate_audio_stream, get_audio_length
 from app.services.shared_data import get_contents, get_time_list, get_hand_raising_count
+from app.services.vision_service import  handle_vision_data
 
 logger = logging.getLogger(__name__)
 
@@ -128,7 +129,7 @@ class LectureStateMachine:
 
     async def ev_enter_conversation(self, websocket: WebSocket, lecture_states: Dict, message, robot_id):
         logger.info(
-            "\n----------------\nState machine is passed through ev_enter_conversation event: %s\n----------------",
+            "State machine is passed through ev_enter_conversation event: %s",
             robot_id
         )
         self.websocket = websocket
@@ -165,7 +166,7 @@ class LectureStateMachine:
         """Transition to the next topic"""
         logger.info(f"Lecture {self.lecture_id}: Moving to the next topic.")
 
-    async def ev_enter_student_qna(self, websocket, data, lecture_state, delay, retrieve_data, connectrobot):
+    async def ev_enter_student_qna(self, current_state_machine, robot_id_before, websocket, data, lecture_state, delay, retrieve_data, connectrobot):
         """
         No positional arguments now – relies on `self.ctx` being set.
 
@@ -181,7 +182,7 @@ class LectureStateMachine:
 
         # task1 = asyncio.create_task(self.wait_for_user_message(websocket, question_active, lecture_state, connectrobot))
         task2 = asyncio.create_task(self.check_question_timeout(websocket, question_active, lecture_state, delay, retrieve_data))
-        task3 = asyncio.create_task(self.check_hand_raising(websocket, question_active, lecture_state, connectrobot))
+        task3 = asyncio.create_task(self.check_hand_raising(current_state_machine, robot_id_before, websocket, question_active, lecture_state, connectrobot))
 
         done, pending = await asyncio.wait([task2, task3], return_when=asyncio.FIRST_COMPLETED)
         for task in pending:
@@ -190,18 +191,19 @@ class LectureStateMachine:
         # self.trigger("ev_enter_content") 
 
 
-    async def check_hand_raising(self, websocket, question_active, lecture_state, connectrobot):
+    async def check_hand_raising(self, current_state_machine, robot_id_before, websocket, question_active, lecture_state, connectrobot):
         from main import handle_user_message
         while question_active:
             current_count = get_hand_raising_count(connectrobot)
             logger.info(f"Current hand_raising_count: {current_count}")
             await asyncio.sleep(1)
             if current_count > 0:
-                logger.info("-------------------- Someone is raising hand --------------------")
+                logger.info("Someone is raising hand")
                 answer_question = True
 
                 robot_text = "robot_text"
-                await handle_user_message(websocket, lecture_state, robot_text, connectrobot)
+                # await handle_user_message(websocket, lecture_state, robot_text, connectrobot)
+                await handle_vision_data(current_state_machine, robot_id_before, websocket)
 
                 self.trigger("ev_enter_process_qna")
                 while answer_question:
@@ -313,7 +315,7 @@ class LectureStateMachine:
 
     async def _handle_conversation(self):
         from main import handle_user_message
-        logger.info("\n----------------\nStart handle_conversation function successfully!\n----------------")
+        logger.info("Start handle_conversation function successfully!")
 
         logger.info("Lecture %s: Conversation started.", self.lecture_id)
         session_id = str(self.websocket.client)
