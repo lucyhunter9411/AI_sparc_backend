@@ -26,11 +26,12 @@ async def handle_vision_data(current_state_machine, robot_id, websocket):
         # Use the latest robot_id
         current_count = get_hand_raising_count(robot_id)
         current_user = get_name_array(robot_id)
-        # logger.info(f"Current connectrobot: {robot_id}")
-        # logger.info(f"Current hand_raising_count: {current_count}")
-        # logger.info(f"Current hand_raising_count: {current_user}")
-        # logger.info(f"Current current_state_machine: {current_state_machine}")
-        # logger.info(f"Current websocket: {websocket}")
+        # if current_count > 0:
+            # logger.info(f"Current connectrobot: {robot_id}")
+            # logger.info(f"Current hand_raising_count: {current_count}")
+            # logger.info(f"Current hand_raising_count: {current_user}")
+            # logger.info(f"Current current_state_machine: {current_state_machine}")
+            # logger.info(f"Current websocket: {websocket}")
 
         # Always get the current state based on the latest lecture_id
         if current_state_machine:
