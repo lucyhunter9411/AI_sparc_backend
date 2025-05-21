@@ -182,38 +182,59 @@ async def websocket_endpoint(websocket: WebSocket, lecture_id: str, connectrobot
     current_state_machine = None
 
     def update_current_state_machine(value):
-        """Update the current state machine based on the lecture_id."""
-        nonlocal current_state_machine  # Use nonlocal to modify the outer variable
+        nonlocal current_state_machine
         current_state_machine = value
         logger.debug(f"current_state_machine {current_state_machine}")
+
+    async def process_audio_message(audio_path, model, websocket, robot_id, spoken_text, with_style):
+        try:
+            text_result = await transcribe_audio(audio_path, model)
+            logger.info(f"Transcription complete: {text_result}")
+
+            if with_style:
+                await websocket.send_text(json.dumps({"text": text_result}))
+                await current_state_machine.ev_enter_conversation(websocket, lecture_states, text_result, robot_id)
+            else:
+                full_text = "\n User: " + text_result
+                logger.info(f"Sending to connected clients: {full_text}")
+                for client in connected_audio_clients.get(robot_id, []):
+                    if client != websocket:
+                        await current_state_machine.ev_enter_conversation(client, lecture_states, full_text, robot_id)
+                await websocket.send_text(json.dumps({"text": full_text}))
+
+            if robot_id in lecture_state_test and "last_message_time" in lecture_state_test[robot_id]:
+                lecture_state_test[robot_id]["last_message_time"] = time.time()
+
+            current_state_machine.ev_init()
+
+        except Exception as e:
+            logger.exception("Error in background audio processing task:")
+            await websocket.send_text(json.dumps({"error": "Audio processing failed"}))
 
     if lecture_id == "before":
         if lecture_id not in lecture_states:
             lecture_states[lecture_id] = {"state_machine": LectureStateMachine(lecture_id), "sessions": {}, "running": True}
-        
+
         state_machine = lecture_states[lecture_id]["state_machine"]
         update_current_state_machine(state_machine)
         state_machine.ev_init()
 
-        # Create a task for handling vision data
         vision_task = asyncio.create_task(handle_vision_data(current_state_machine, robot_id_before, websocket))
 
         try:
             while True:
-                # Receive a message from the client
                 message = await websocket.receive_text()
                 data = json.loads(message)
-                
+
                 if data:
                     logger.info("Receive data from speech client successfully!")
 
                 if data.get("type") == "ping":
                     logger.info("websocket is open!")
-                    continue 
+                    continue
 
-                # Handle robot_id_before and backend setup
                 if "robot_id" in data:
-                    robot_id_before = data["robot_id"]  # Update robot_id here
+                    robot_id_before = data["robot_id"]
                     if "local_time" in data:
                         local_time = data["local_time"]
                         dt = datetime.fromisoformat(local_time)
@@ -237,14 +258,12 @@ async def websocket_endpoint(websocket: WebSocket, lecture_id: str, connectrobot
                 if "backend" in data:
                     if robot_id_before:
                         robot_backends[robot_id_before] = data["backend"]
-                
+
                 if "spoken_text" in data:
                     if robot_id_before:
                         robot_spoken_text[robot_id_before] = data["spoken_text"]
-                        text = ""
-                        text += "Assistant:" + robot_spoken_text[robot_id_before]  # Concatenate text
+                        text = "Assistant:" + robot_spoken_text[robot_id_before]
 
-                # Handle audio message
                 if "audio" in data:
                     if robot_id_before:
                         audio_path = f"{robot_id_before}received_audio.wav"
@@ -253,74 +272,38 @@ async def websocket_endpoint(websocket: WebSocket, lecture_id: str, connectrobot
                         else:
                             logger.warning(f"Invalid audio data format: {type(data['audio'])}")
                             return
-                        if "style" in data:
-                            with wave.open(audio_path, "wb") as wf:
-                                wf.setnchannels(1) 
-                                wf.setsampwidth(2)
-                                wf.setframerate(16000) 
-                                wf.writeframes(audio_bytes)
 
-                            model = robot_backends.get(robot_id_before, "whisper-1")
-                            logger.info("Robot_ID: %s", robot_id_before)
-                            logger.info("STT model: %s", model)
-                            #stt
-                            text = await transcribe_audio(audio_path, model)
+                        with wave.open(audio_path, "wb") as wf:
+                            wf.setnchannels(1)
+                            wf.setsampwidth(2)
+                            wf.setframerate(16000)
+                            wf.writeframes(audio_bytes)
 
-                            await websocket.send_text(json.dumps({"text": text}))
-                            await state_machine.ev_enter_conversation(websocket, lecture_states, text, robot_id_before)
+                        logger.info(f"Audio saved to {audio_path}")
 
-                        else:
-                            with wave.open(audio_path, "wb") as wf:
-                                wf.setnchannels(1)
-                                wf.setsampwidth(2)
-                                wf.setframerate(16000)
-                                wf.writeframes(audio_bytes)
+                        model = robot_backends.get(robot_id_before, "whisper-1")
+                        with_style = "style" in data
+                        spoken = robot_spoken_text.get(robot_id_before, "")
 
-                            logger.info(f"Audio saved to {audio_path}")
-
-                            model = robot_backends.get(robot_id_before, "whisper-1")
-                            
-                            logger.info(f"STT model: {model}")
-                            #stt
-                            generated_text = await transcribe_audio(audio_path, model)
-                            text += "\n User: " + generated_text  # Concatenate text
-
-                            logger.info(f"Total Text: {text}")
-                            #llm
-                            logger.info(f"connected_audio_clients: {connected_audio_clients.get(robot_id_before, [])}")
-                            for client in connected_audio_clients.get(robot_id_before, []):
-                                logger.info(f"websocket: {websocket}")
-                                if client != websocket:
-                                    logger.info(f"Entering conversation for client: {client}")
-                                    logger.info(f"Text: {text}")
-                                    logger.info(f"Robot_ID: {robot_id_before}")
-                                    await state_machine.ev_enter_conversation(client, lecture_states, text, robot_id_before)
-
-                            #send to speech client
-                            await websocket.send_text(json.dumps({"text": text}))
-                            if robot_id_before in lecture_state_test:
-                                if "last_message_time" in lecture_state_test[robot_id_before]:
-                                    lecture_state_test[robot_id_before]["last_message_time"] = time.time()
-                        state_machine.ev_init()
+                        asyncio.create_task(process_audio_message(audio_path, model, websocket, robot_id_before, spoken, with_style))
 
         except WebSocketDisconnect:
             logger.error("❌ WebSocket disconnected unexpectedly: %s", session_id)
             if robot_id_before and websocket in connected_clients.get(robot_id_before, []):
                 connected_clients[robot_id_before].remove(websocket)
-                if not connected_clients[robot_id_before]:  # Clean up if no clients are left
+                if not connected_clients[robot_id_before]:
                     del connected_clients[robot_id_before]
             if robot_id_before and websocket in connected_audio_clients.get(robot_id_before, []):
                 connected_audio_clients[robot_id_before].remove(websocket)
-                if not connected_audio_clients[robot_id_before]:  # Clean up if no clients are left
+                if not connected_audio_clients[robot_id_before]:
                     del connected_audio_clients[robot_id_before]
-            # Clean up the session
             if lecture_id in lecture_states and connectrobot in lecture_states[lecture_id]:
                 lecture_states[lecture_id][connectrobot]["sessions"].pop(session_id, None)
 
-        except KeyError as ke:
+        except KeyError:
             logger.exception("❌ KeyError - Missing expected key:")
             await websocket.send_text(json.dumps({"error": "Key error occurred."}))
-        except ValueError as ve:
+        except ValueError:
             logger.exception("❌ ValueError occurred during processing:")
             await websocket.send_text(json.dumps({"error": "Value error occurred."}))
         except Exception as e:
@@ -337,9 +320,8 @@ async def websocket_endpoint(websocket: WebSocket, lecture_id: str, connectrobot
                 connected_audio_clients[robot_id_before].remove(websocket)
                 if not connected_audio_clients[robot_id_before]:
                     del connected_audio_clients[robot_id_before]
-            # Cancel the vision task if the websocket disconnects
             vision_task.cancel()
-            await vision_task  # Wait for the task to finish if needed
+            await vision_task
 
     else:
         # Check if the lecture_id exists in lecture_states
@@ -620,11 +602,11 @@ async def handle_user_message(
     history = chat_histories.get(session_id, [])
     history = [sanitize_text(h) for h in history]
    
-    if not history:
-        history.append("User: नमस्ते")
-        history.append("Assistant: नमस्ते! विज्ञान की दुनिया में आपका स्वागत है! विज्ञान हमारे चारों ओर है, जैसे आसमान में पक्षी, जमीन पर पत्थर, और बीज का फूल में बदलना। आप जानेंगे कि कैसे प्राचीन भारतीय विज्ञान और प्रौद्योगिकी ने आज की विज्ञान को प्रभावित किया है। क्या आपको कुछ खास विषय में मदद चाहिए?")
-        history.append("User: హలో")
-        history.append("Assistant: హలో! మీతో మాట్లాడటం చాలా ఆనందంగా ఉంది! జ్ఞానం మరియు ఇతర విషయాలతో మీకు సహాయం చేయడానికి నేను ఇక్కడ ఉన్నాను. మీరు ఏవైనా ప్రశ్నలు లేదా ఒక నిర్దిష్ట విషయం గురించి తెలుసుకోవాలనుకుంటున్నారా? అడగడానికి స్వేచ్ఛగా ఉండకండి!")
+    # if not history:
+    #     history.append("User: नमस्ते")
+    #     history.append("Assistant: नमस्ते! विज्ञान की दुनिया में आपका स्वागत है! विज्ञान हमारे चारों ओर है, जैसे आसमान में पक्षी, जमीन पर पत्थर, और बीज का फूल में बदलना। आप जानेंगे कि कैसे प्राचीन भारतीय विज्ञान और प्रौद्योगिकी ने आज की विज्ञान को प्रभावित किया है। क्या आपको कुछ खास विषय में मदद चाहिए?")
+    #     history.append("User: హలో")
+    #     history.append("Assistant: హలో! మీతో మాట్లాడటం చాలా ఆనందంగా ఉంది! జ్ఞానం మరియు ఇతర విషయాలతో మీకు సహాయం చేయడానికి నేను ఇక్కడ ఉన్నాను. మీరు ఏవైనా ప్రశ్నలు లేదా ఒక నిర్దిష్ట విషయం గురించి తెలుసుకోవాలనుకుంటున్నారా? అడగడానికి స్వేచ్ఛగా ఉండకండి!")
 
     retrieved_docs = faiss_text_db.similarity_search(message, k=5)
     retrieved_texts = "\n".join(sanitize_text(doc.page_content) for doc in retrieved_docs) if retrieved_docs else "No relevant context found."
