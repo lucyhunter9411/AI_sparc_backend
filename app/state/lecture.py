@@ -238,40 +238,6 @@ class LectureStateMachine:
                     
     logger.info("Exiting check_hand_raising function.")
 
-    # async def wait_for_user_message(self, websocket, question_active, lecture_state, connectrobot):
-    #     from main import handle_user_message
-    #     self.trigger("ev_enter_process_qna")
-    #     while question_active:
-    #         data = await websocket.receive_text()
-    #         message = json.loads(data)
-    #         if "audio" in message:
-    #             audio_path = f"{connectrobot}received_audio.wav"
-    #             if isinstance(message["audio"], str):
-    #                 audio_bytes = base64.b64decode(message["audio"])
-    #             else:
-    #                 logger.warning(f"⚠️ Invalid audio data format: {type(message['audio'])}")
-    #                 return
-    #             if "style" in message:
-                    
-    #                 with wave.open(audio_path, "wb") as wf:
-    #                     wf.setnchannels(1) 
-    #                     wf.setsampwidth(2)
-    #                     wf.setframerate(16000) 
-    #                     wf.writeframes(audio_bytes)
-
-    #                 model = message["backend"]
-    #                 logger.info("STT model: %s", model)
-    #                 #stt
-    #                 text = await transcribe_audio(audio_path, model)
-    #                 logger.info("Text: %s", text)
-    #                 await websocket.send_text(json.dumps({"questionResponse": text}))
-
-    #                 duration = await handle_user_message(websocket, lecture_state, text, "robot_id")
-                    
-    #         await asyncio.sleep(0.1)
-
-    #     self.trigger("ev_exit_process_qna")
-
     async def check_question_timeout(self, websocket, question_active, lecture_state, delay, retrieve_data):
         from main import generate_and_send_ai_response
         while question_active:    
