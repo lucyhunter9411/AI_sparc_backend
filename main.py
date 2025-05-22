@@ -46,6 +46,12 @@ from app.services.vision_service import  handle_vision_data, get_data
 from datetime import datetime
 from app.services.shared_data import get_selected_student
 
+# --- add just above the FastAPI() call --------------
+from contextlib import asynccontextmanager
+from langchain_community.vectorstores import FAISS
+from langchain_community.embeddings import HuggingFaceEmbeddings
+
+
 from app.services.llm_service import (
     predict,                 # call the active model
     set_default_llm,         # change via /selectModel endpoint
@@ -58,11 +64,32 @@ from app.core.logging import setup_logging
 settings = get_settings()
 setup_logging(level="INFO")        # single call replaces logging.basicConfig
 logger = logging.getLogger(__name__)  # module-specific logger
-settings = get_settings()
 
 TESTING: bool = os.getenv("TESTING", "0") == "1"  # added for pytest
 
-app = FastAPI()
+# DB_TEXT_FAISS_PATH = "vectorstore/text_faiss"
+# faiss_text_db = FAISS.load_local(
+#     DB_TEXT_FAISS_PATH, HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2"),
+#     allow_dangerous_deserialization=True
+# )
+
+DB_TEXT_FAISS_PATH = "vectorstore/text_faiss"
+EMBEDDING_MODEL    = "sentence-transformers/all-MiniLM-L6-v2"
+faiss_text_db = None      # will be initialised once in lifespan
+
+@asynccontextmanager
+async def lifespan(app):
+    global faiss_text_db
+    faiss_text_db = FAISS.load_local(
+        DB_TEXT_FAISS_PATH,
+        HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL),
+        allow_dangerous_deserialization=True,
+    )
+    yield                                   # --- app runs here ---
+    # no teardown required
+
+# app = FastAPI()
+app = FastAPI(lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -306,6 +333,19 @@ async def websocket_endpoint(websocket: WebSocket, lecture_id: str, connectrobot
             logger.exception(f"❌ Unexpected error with {robot_id_before}:")
             await websocket.send_text(json.dumps({"error": "Internal server error"}))
             await asyncio.sleep(2)
+
+        # finally:
+        #     if robot_id_before and websocket in connected_clients.get(robot_id_before, []):
+        #         connected_clients[robot_id_before].remove(websocket)
+        #         if not connected_clients[robot_id_before]:
+        #             del connected_clients[robot_id_before]
+        #     if robot_id_before and websocket in connected_audio_clients.get(robot_id_before, []):
+        #         connected_audio_clients[robot_id_before].remove(websocket)
+        #         if not connected_audio_clients[robot_id_before]:
+        #             del connected_audio_clients[robot_id_before]
+        #     vision_task.cancel()
+        #     await vision_task
+        # Update your finally block in websocket_endpoint
         finally:
             try:
                 if robot_id_before and websocket in connected_clients.get(robot_id_before, []):
@@ -498,12 +538,6 @@ async def fetch_data_on_startup():
     except Exception:
         logger.exception("❌ Error while fetching data on startup")
 
-DB_TEXT_FAISS_PATH = "vectorstore/text_faiss"
-faiss_text_db = FAISS.load_local(
-    DB_TEXT_FAISS_PATH, HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2"),
-    allow_dangerous_deserialization=True
-)
-
 def reset_session_state(session_id: str, lecture_id: str):
     global contents, time_list
     previous_language = lecture_states.get(lecture_id, {}).get("selectedLanguageName", "English")
@@ -549,7 +583,29 @@ async def handle_user_message(
     # Check if the robot_id exists in stored_users
     existing_user = next((user for user in stored_users if user[0] == robot_id), None)
 
+    # if existing_user is None:
+    #     # If not, store the selected_user
+    #     stored_users.append((robot_id, selected_user))
+    #     logger.info("---------------------Initial selected_user stored.")
+    # else:
+    #     # Compare the current selected_user with the stored one
+    #     if selected_user != existing_user[1]:
+    #         logger.info("---------------------Changed")
+    #         # Update the stored user
+    #         stored_users = [(robot_id, selected_user) if user[0] == robot_id else user for user in stored_users]
+    #     else:
+    #         logger.info("---------------------Same")
+
     logger.info("Start handle_user_message function successfully!")
+
+    # user_message = json.loads(message).get("text")
+    # user_name = json.loads(message).get("username")
+    # total_count = json.loads(message).get("totalCount")
+    # handsup_count = json.loads(message).get("handsUpCount")
+
+    # user_data = db.users.find_one({"name": user_name})
+    
+    # overview = user_data.get("overview") if user_data else None
 
     logger.info("Start handle_user_message function successfully!")
 
@@ -590,6 +646,12 @@ async def handle_user_message(
 
     history = chat_histories.get(session_id, [])
     history = [sanitize_text(h) for h in history]
+   
+    # if not history:
+    #     history.append("User: नमस्ते")
+    #     history.append("Assistant: नमस्ते! विज्ञान की दुनिया में आपका स्वागत है! विज्ञान हमारे चारों ओर है, जैसे आसमान में पक्षी, जमीन पर पत्थर, और बीज का फूल में बदलना। आप जानेंगे कि कैसे प्राचीन भारतीय विज्ञान और प्रौद्योगिकी ने आज की विज्ञान को प्रभावित किया है। क्या आपको कुछ खास विषय में मदद चाहिए?")
+    #     history.append("User: హలో")
+    #     history.append("Assistant: హలో! మీతో మాట్లాడటం చాలా ఆనందంగా ఉంది! జ్ఞానం మరియు ఇతర విషయాలతో మీకు సహాయం చేయడానికి నేను ఇక్కడ ఉన్నాను. మీరు ఏవైనా ప్రశ్నలు లేదా ఒక నిర్దిష్ట విషయం గురించి తెలుసుకోవాలనుకుంటున్నారా? అడగడానికి స్వేచ్ఛగా ఉండకండి!")
 
     retrieved_docs = faiss_text_db.similarity_search(message, k=5)
     retrieved_texts = "\n".join(sanitize_text(doc.page_content) for doc in retrieved_docs) if retrieved_docs else "No relevant context found."
@@ -675,6 +737,14 @@ async def handle_user_message(
 
     if lecture_state:
         lecture_state["last_message_time"] = time.time()
+
+    # history.append(f"User: {message}")
+    # history.append(f"Assistant: {result}")
+
+    # if len(history) > MAX_HISTORY_LENGTH * 2:
+    #     history = history[-MAX_HISTORY_LENGTH * 2:]
+    
+    # chat_histories[session_id] = history
     
     is_new_user = existing_user is None
     is_changed_user = not is_new_user and selected_user != existing_user[1]
