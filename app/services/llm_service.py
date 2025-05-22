@@ -28,6 +28,7 @@ def build_chat_prompt(
     """
     Render the final prompt string used for the LLM completion.
     """
+    print("---------------------build_chat_prompt function is running correctly.")
     tmpl = PromptTemplate(
         input_variables=[
             "history",
@@ -42,6 +43,7 @@ def build_chat_prompt(
         ],
         template=custom_template,
     )
+    print("---------------------tmpl:", tmpl)
     return tmpl.format(
         history="\n".join(history),
         query=query,

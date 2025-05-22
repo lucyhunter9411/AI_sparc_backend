@@ -139,3 +139,4 @@ cython_debug/
 __pycache__/
 
 robot_cgreceived_audio.wav
+robot_not_connectedreceived_audio.wav

@@ -21,3 +21,4 @@ soundfile==0.13.1
 sounddevice==0.5.1
 speechrecognition==3.14.1
 pydantic-settings
+huggingface-hub
