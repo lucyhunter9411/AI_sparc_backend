@@ -1,7 +1,7 @@
 import asyncio  # For asynchronous programming
 import base64  # For encoding audio data to base64
 import json  # For converting data to JSON format
-from app.services.shared_data import get_hand_raising_count, get_name_array, set_hand_raising_count, set_name_array, set_selected_student
+from app.services.shared_data import get_hand_raising_count, get_name_array, set_hand_raising_count, set_name_array, set_selected_student, set_local_time_vision, get_local_time_vision
 from app.utils.audio import generate_audio_stream, get_audio_length
 from app.services.llm_service import generate_openai_response
 from datetime import datetime
@@ -19,6 +19,7 @@ class VisionData(BaseModel):
     image_name: str  # The name of the image file
     image: str  # The image data in bytes
     detect_user: list
+    local_time_vision: int
 
 async def handle_vision_data(current_state_machine, robot_id, websocket):
     logger.info("handle_vision_data function is called correctly.")
@@ -26,12 +27,6 @@ async def handle_vision_data(current_state_machine, robot_id, websocket):
         # Use the latest robot_id
         current_count = get_hand_raising_count(robot_id)
         current_user = get_name_array(robot_id)
-        # if current_count > 0:
-            # logger.info(f"Current connectrobot: {robot_id}")
-            # logger.info(f"Current hand_raising_count: {current_count}")
-            # logger.info(f"Current hand_raising_count: {current_user}")
-            # logger.info(f"Current current_state_machine: {current_state_machine}")
-            # logger.info(f"Current websocket: {websocket}")
 
         # Always get the current state based on the latest lecture_id
         if current_state_machine:
@@ -39,13 +34,8 @@ async def handle_vision_data(current_state_machine, robot_id, websocket):
             # logger.info(f"current_state {current_state}")
 
             if current_count > 0 and current_state == "st_waiting":
-                local_time_vision = datetime.now().isoformat()
-                dt_vision = datetime.fromisoformat(local_time_vision)
-                formatted_time_vision = dt_vision.strftime("%H")
-                hour = int(formatted_time_vision)  # Convert to integer
-
-                # Get the student's name
-                # student_name = current_user[0] if current_user else "Student"  # Default to "Student" if no name
+                hour = get_local_time_vision(robot_id)
+                
                 student_name = "Student"  # Default to "Student" if no name
                 if isinstance(current_user, list):
                     for name in current_user:
@@ -98,6 +88,9 @@ async def get_data(vision_data: VisionData): # rename visionUpdate
     image_name = vision_data.image_name
     image = vision_data.image
     detect_user = vision_data.detect_user
+    local_time_vision = vision_data.local_time_vision
+    
+    set_local_time_vision(robot_id, local_time_vision)
 
     names_array = [entry['name'] for entry in detect_user]
     set_name_array(robot_id, names_array)

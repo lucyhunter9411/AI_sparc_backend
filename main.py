@@ -34,13 +34,13 @@ import speech_recognition as sr
 import uuid  # Import uuid for generating unique session IDs
 from bson import ObjectId
 from app.api.deps import get_db
-from app.api.deps import get_db, get_vectorstore
+from app.api.deps import get_db
 from app.utils.audio import generate_audio_stream, get_audio_length
 from app.services.stt_service import transcribe_audio
 from app.services.llm_service import build_chat_prompt
 import app.services.llm as llm
 from app.state.lecture import LectureStateMachine
-from app.services.shared_data import set_contents, set_time_list, set_hand_raising_count, set_name_array
+from app.services.shared_data import set_contents, set_time_list
 from app.services.llm_service import generate_openai_response
 from app.services.vision_service import  handle_vision_data, get_data
 from datetime import datetime
@@ -355,19 +355,6 @@ async def websocket_endpoint(websocket: WebSocket, lecture_id: str, connectrobot
             logger.exception(f"❌ Unexpected error with {robot_id_before}:")
             await websocket.send_text(json.dumps({"error": "Internal server error"}))
             await asyncio.sleep(2)
-
-        # finally:
-        #     if robot_id_before and websocket in connected_clients.get(robot_id_before, []):
-        #         connected_clients[robot_id_before].remove(websocket)
-        #         if not connected_clients[robot_id_before]:
-        #             del connected_clients[robot_id_before]
-        #     if robot_id_before and websocket in connected_audio_clients.get(robot_id_before, []):
-        #         connected_audio_clients[robot_id_before].remove(websocket)
-        #         if not connected_audio_clients[robot_id_before]:
-        #             del connected_audio_clients[robot_id_before]
-        #     vision_task.cancel()
-        #     await vision_task
-        # Update your finally block in websocket_endpoint
         finally:
             try:
                 if robot_id_before and websocket in connected_clients.get(robot_id_before, []):
@@ -580,19 +567,6 @@ async def handle_user_message(
     # Check if the robot_id exists in stored_users
     existing_user = next((user for user in stored_users if user[0] == robot_id), None)
 
-    # if existing_user is None:
-    #     # If not, store the selected_user
-    #     stored_users.append((robot_id, selected_user))
-    #     logger.info("---------------------Initial selected_user stored.")
-    # else:
-    #     # Compare the current selected_user with the stored one
-    #     if selected_user != existing_user[1]:
-    #         logger.info("---------------------Changed")
-    #         # Update the stored user
-    #         stored_users = [(robot_id, selected_user) if user[0] == robot_id else user for user in stored_users]
-    #     else:
-    #         logger.info("---------------------Same")
-
     logger.info("Start handle_user_message function successfully!")
 
     # user_message = json.loads(message).get("text")
@@ -643,24 +617,14 @@ async def handle_user_message(
 
     history = chat_histories.get(session_id, [])
     history = [sanitize_text(h) for h in history]
-   
-    # if not history:
-    #     history.append("User: नमस्ते")
-    #     history.append("Assistant: नमस्ते! विज्ञान की दुनिया में आपका स्वागत है! विज्ञान हमारे चारों ओर है, जैसे आसमान में पक्षी, जमीन पर पत्थर, और बीज का फूल में बदलना। आप जानेंगे कि कैसे प्राचीन भारतीय विज्ञान और प्रौद्योगिकी ने आज की विज्ञान को प्रभावित किया है। क्या आपको कुछ खास विषय में मदद चाहिए?")
-    #     history.append("User: హలో")
-    #     history.append("Assistant: హలో! మీతో మాట్లాడటం చాలా ఆనందంగా ఉంది! జ్ఞానం మరియు ఇతర విషయాలతో మీకు సహాయం చేయడానికి నేను ఇక్కడ ఉన్నాను. మీరు ఏవైనా ప్రశ్నలు లేదా ఒక నిర్దిష్ట విషయం గురించి తెలుసుకోవాలనుకుంటున్నారా? అడగడానికి స్వేచ్ఛగా ఉండకండి!")
 
     retrieved_docs = faiss_text_db.similarity_search(message, k=5)
     retrieved_texts = "\n".join(sanitize_text(doc.page_content) for doc in retrieved_docs) if retrieved_docs else "No relevant context found."
-    print("-----------------------retrieved_texts:", retrieved_texts)
 
     logger.info("History for Formatted Prompt: %s", history)
     logger.info("User Query for Formatted Prompt: %s", message)
     greeting_msg = "Hello"
-    logger.info(f"local_time_setlocal_time_set: local_time_set: {local_time_set}")
-    local_time = datetime.now().isoformat()
-    dt = datetime.fromisoformat(local_time)
-    hour = int(dt.strftime("%H"))  # Convert to integer
+    hour = local_time_set[robot_id]
 
     # Create a prompt for OpenAI to generate a greeting
     prompt = f"Generate a greeting message based on the current hour {hour}. Instead of 'Hello', make exact greeting based on current hour. And don't tell me about the exact time. Make this reply with one sentence. For example, 'Good morning', 'Good afternoon', 'Good evening' or 'Good night'"
@@ -1120,6 +1084,7 @@ class VisionData(BaseModel):
     image_name: str  # The name of the image file
     image: str  # The image data in bytes
     detect_user: list
+    local_time_vision: int
 
 @app.post("/vision/getData/")  # rename /vision/update/
 async def get_data_endpoint(vision_data: VisionData):  # rename visionUpdate

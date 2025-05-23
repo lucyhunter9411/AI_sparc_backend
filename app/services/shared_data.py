@@ -4,6 +4,7 @@ time_list = []
 hand_raising_count = []
 name_array = []
 selected_student = []
+local_time_vision = []
 
 def set_contents(value):
     global contents
@@ -64,6 +65,22 @@ def set_selected_student(robot_id, value):
 
 def get_selected_student(robot_id):
     for entry in selected_student:
+        if robot_id in entry:
+            return entry[robot_id]  # Return the count for the robot_id
+    return 0  # Return 0 if robot_id not found
+
+def set_local_time_vision(robot_id, value):
+    global local_time_vision
+    # Check if the robot_id already exists in the list
+    for entry in local_time_vision:
+        if robot_id in entry:
+            entry[robot_id] = value  # Update existing entry
+            return
+    # If not found, append a new dictionary
+    local_time_vision.append({robot_id: value})
+
+def get_local_time_vision(robot_id):
+    for entry in local_time_vision:
         if robot_id in entry:
             return entry[robot_id]  # Return the count for the robot_id
     return 0  # Return 0 if robot_id not found
