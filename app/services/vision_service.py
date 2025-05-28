@@ -3,10 +3,10 @@ import base64  # For encoding audio data to base64
 import json  # For converting data to JSON format
 from app.services.shared_data import get_hand_raising_count, get_name_array, set_hand_raising_count, set_name_array, set_selected_student, set_local_time_vision, get_local_time_vision
 from app.utils.audio import generate_audio_stream, get_audio_length
-from app.services.llm_service import generate_openai_response
 from datetime import datetime
 from pydantic import BaseModel
 import logging  # For logging information
+from app.services.llm_service import predict
 
 # Configure the logger
 logging.basicConfig(level=logging.INFO)  # Set the logging level
@@ -23,59 +23,72 @@ class VisionData(BaseModel):
 
 async def handle_vision_data(current_state_machine, robot_id, websocket):
     logger.info("handle_vision_data function is called correctly.")
-    while True:
-        # Use the latest robot_id
-        current_count = get_hand_raising_count(robot_id)
-        current_user = get_name_array(robot_id)
+    try:
+        while True:
+            # Use the latest robot_id
+            current_count = get_hand_raising_count(robot_id)
+            current_user = get_name_array(robot_id)
 
-        # Always get the current state based on the latest lecture_id
-        if current_state_machine:
-            current_state = current_state_machine.state  # Get the current state name
-            # logger.info(f"current_state {current_state}")
+            # Always get the current state based on the latest lecture_id
+            if current_state_machine:
+                current_state = current_state_machine.state  # Get the current state name
 
-            if current_count > 0 and current_state == "st_waiting":
-                hour = get_local_time_vision(robot_id)
-                
-                student_name = "Student"  # Default to "Student" if no name
-                if isinstance(current_user, list):
-                    for name in current_user:
-                        if name != "Unknown":  # Check if the name is not "Unknown"
-                            student_name = name  # Use the first valid name found
-                            break  # Exit the loop once a valid name is found
-                    set_selected_student(robot_id, student_name)
-                else:
-                    logger.error(f"Expected current_user to be a list, but got: {type(current_user)} with value {current_user}")
+                if current_count > 0 and current_state == "st_waiting":
+                    hour = get_local_time_vision(robot_id)
 
-                # Create a prompt for OpenAI to generate a greeting
-                prompt = f"Generate a greeting message for a student named {student_name} based on the current hour {hour}. The message should invite the student to ask questions. Instead of 'Hello', make exact greeting based on current hour. And don't tell me about the exact time. Make this reply with 2 sentences. One sentence is greeting like 'Good morning, Student' and other sentence is to ask them to make question."
+                    student_name = "Student"  # Default to "Student" if no name
+                    if isinstance(current_user, list):
+                        for name in current_user:
+                            if name != "Unknown":  # Use the first valid name found
+                                student_name = name
+                                break
+                        set_selected_student(robot_id, student_name)
+                    else:
+                        logger.error(
+                            f"Expected current_user to be a list, but got: {type(current_user)} with value {current_user}"
+                        )
 
-                # Call OpenAI API to generate the greeting
-                result = generate_openai_response(prompt)
-                logger.info(f"Current result: {result}")
-                # result = "If you have any questions, feel free to ask!"
-                selectedLanguageName = "English"
-                # TTS
-                audio_stream = generate_audio_stream(result, selectedLanguageName)
-                audio_length = get_audio_length(audio_stream)
-                audio_stream.seek(0)
-                audio_base64 = base64.b64encode(audio_stream.read()).decode("utf-8")
-                data = {
-                    "robot_id": robot_id,
-                    "text": result,
-                    "audio": audio_base64,
-                    "type": "model"
-                }
-                logger.info(f"Data to be sent to audio client: robot_id: {robot_id}, text: {result}, type: model")
-                logger.info(f"audio_length: {audio_length}")
+                    # Prompt for OpenAI
+                    prompt = (
+                        f"Generate a greeting message for a student named {student_name} "
+                        f"based on the current hour {hour}. The message should invite the student "
+                        f"to ask questions. Instead of 'Hello', make exact greeting based on current hour. "
+                        f"And don't tell me about the exact time. Make this reply with 2 sentences. "
+                        f"One sentence is greeting like 'Good morning, Student' and other sentence is to ask them to make question."
+                    )
 
-                # Convert the dictionary to a JSON string
-                json_data = json.dumps(data)
+                    # Call OpenAI asynchronously
+                    result = await predict(prompt)
+                    logger.info(f"Current result: {result}")
 
-                # Send to audio client
-                await websocket.send_text(json_data)
-                await asyncio.sleep(audio_length + 5)  # Adjust the sleep time as needed
+                    selectedLanguageName = "English"
 
-        await asyncio.sleep(1)  # Adjust the sleep time as needed
+                    # TTS
+                    audio_stream = generate_audio_stream(result, selectedLanguageName)
+                    audio_length = get_audio_length(audio_stream)
+                    audio_stream.seek(0)
+                    audio_base64 = base64.b64encode(audio_stream.read()).decode("utf-8")
+
+                    data = {
+                        "robot_id": robot_id,
+                        "text": result,
+                        "audio": audio_base64,
+                        "type": "model",
+                    }
+                    logger.info(
+                        f"Data to be sent to audio client: robot_id: {robot_id}, "
+                        f"text: {result}, type: model"
+                    )
+                    logger.info(f"audio_length: {audio_length}")
+
+                    # Send to audio client
+                    await websocket.send_text(json.dumps(data))
+                    await asyncio.sleep(audio_length + 5)  # let audio play
+
+            await asyncio.sleep(1)  # loop throttle
+    except asyncio.CancelledError:
+        logger.info("Vision loop cancelled")
+        raise  # allows the task to terminate cleanly
 
 async def get_data(vision_data: VisionData): # rename visionUpdate
 

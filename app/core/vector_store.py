@@ -1,6 +1,6 @@
 
 # core/vector_store.py
-from contextlib import contextmanager
+from contextlib import asynccontextmanager
 from langchain_community.vectorstores import FAISS
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from app.core.config import get_settings
@@ -9,8 +9,8 @@ settings = get_settings()
 DB_TEXT_FAISS_PATH = "vectorstore/text_faiss"
 EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 
-@contextmanager
-def faiss_text_db():
+@asynccontextmanager    
+async def faiss_text_db():
     """
     Contextmanager to load and provide the FAISS vector store.
     """

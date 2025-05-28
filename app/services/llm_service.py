@@ -8,6 +8,7 @@ from typing import Any
 from app.services import llm as _raw    # existing module with llm_models etc.
 import requests
 import os 
+import httpx, asyncio
 
 OPENAI_API_KEY = os.getenv("OPENAI_KEY", "")
 
@@ -28,7 +29,6 @@ def build_chat_prompt(
     """
     Render the final prompt string used for the LLM completion.
     """
-    print("---------------------build_chat_prompt function is running correctly.")
     tmpl = PromptTemplate(
         input_variables=[
             "history",
@@ -43,7 +43,7 @@ def build_chat_prompt(
         ],
         template=custom_template,
     )
-    print("---------------------tmpl:", tmpl)
+    
     return tmpl.format(
         history="\n".join(history),
         query=query,
@@ -102,33 +102,25 @@ def predict(prompt: str, *, model_name: str | None = None, **kwargs: Any) -> str
     """
     return get_llm(model_name).predict(prompt, **kwargs)
 
+async def predict(
+    prompt: str,
+    *,
+    model_name: str | None = None,
+    **kwargs: Any,
+) -> str:
+    """
+    Async wrapper around LangChain chat-models.
 
-def generate_openai_response(prompt: str) -> str:
-    url = "https://api.openai.com/v1/chat/completions"
+    • If the selected LLM exposes `.apredict`, use it.
+    • Otherwise fall back to `.predict` in a worker thread so the
+      FastAPI event-loop is never blocked.
+    """
+    llm = get_llm(model_name)
 
-    headers = {
-        "Authorization": f"Bearer {OPENAI_API_KEY}",
-        "Content-Type": "application/json"
-    }
+    # native async path (works for most LangChain chat models)
+    if hasattr(llm, "apredict"):
+        return await llm.apredict(prompt, **kwargs)
 
-    data = {
-        "model": "gpt-3.5-turbo",
-        "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0.7
-    }
+    # sync model – run in a thread pool
+    return await asyncio.to_thread(llm.predict, prompt, **kwargs)
 
-    try:
-        print("⏳ Sending request to OpenAI...")
-        response = requests.post(url, headers=headers, json=data, timeout=10)  # Force timeout after 10s
-        response.raise_for_status()
-        print("✅ Response received")
-        print("🔍 Full Response JSON:", response.json())
-        print("🔍 Full Response JSON:", response.json()['choices'][0]['message']['content'].strip())
-        return response.json()['choices'][0]['message']['content'].strip()
-    except requests.exceptions.Timeout:
-        print("❌ Request timed out!")
-        return "Request timed out."
-    except requests.exceptions.RequestException as e:
-        print(f"❌ Request error: {e}")
-        print("Response text:", getattr(e.response, 'text', 'No response body'))
-        return "Request failed."

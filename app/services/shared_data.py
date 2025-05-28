@@ -1,4 +1,14 @@
 # shared_data.py
+
+from collections import defaultdict
+from collections import defaultdict, deque
+
+conversations = defaultdict(list)     # robot_id → list[dict]
+MAX_TOKENS = 32000
+
+MAX_HISTORY = 5                       # or whatever value you had before
+conversations = defaultdict(lambda: deque(maxlen=MAX_HISTORY))
+
 contents = []
 time_list = []
 hand_raising_count = []

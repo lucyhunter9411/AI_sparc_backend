@@ -202,7 +202,6 @@ class LectureStateMachine:
                 answer_question = True
 
                 robot_text = "robot_text"
-                # await handle_user_message(websocket, lecture_state, robot_text, connectrobot)
                 await handle_vision_data(current_state_machine, robot_id_before, websocket)
 
                 self.trigger("ev_enter_process_qna")
@@ -235,7 +234,9 @@ class LectureStateMachine:
                             await asyncio.sleep(duration)
                     answer_question = False
                 self.trigger("ev_exit_process_qna")
-                    
+
+        if vision_task and not vision_task.done():
+            vision_task.cancel()         
     logger.info("Exiting check_hand_raising function.")
 
     async def check_question_timeout(self, websocket, question_active, lecture_state, delay, retrieve_data):

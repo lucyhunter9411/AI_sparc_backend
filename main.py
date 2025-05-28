@@ -41,10 +41,10 @@ from app.services.llm_service import build_chat_prompt
 import app.services.llm as llm
 from app.state.lecture import LectureStateMachine
 from app.services.shared_data import set_contents, set_time_list
-from app.services.llm_service import generate_openai_response
 from app.services.vision_service import  handle_vision_data, get_data
 from datetime import datetime
 from app.services.shared_data import get_selected_student
+from app.websockets.connection_manager import ConnectionManager
 
 # --- add just above the FastAPI() call --------------
 from contextlib import asynccontextmanager
@@ -85,31 +85,57 @@ DB_TEXT_FAISS_PATH = "vectorstore/text_faiss"
 EMBEDDING_MODEL    = "sentence-transformers/all-MiniLM-L6-v2"
 faiss_text_db = None      # will be initialised once in lifespan
 
+
+from app.websockets.before_lecture import router as lecture_router
+
+manager = ConnectionManager() 
+
 @asynccontextmanager
-async def lifespan(app):
+async def lifespan(app: FastAPI):
+    """
+    Application-wide startup / shutdown lifecycle hook.
+
+    * Loads the custom prompt template from Cosmos Mongo.
+    * Loads the FAISS vector store into memory.
+    * Publishes a ConnectionManager instance at `app.state.conn_mgr`
+      so any request handler can `request.app.state.conn_mgr`.
+    """
     global faiss_text_db, custom_prompt_template
+
+    # ───── expose ConnectionManager early ─────
+    app.state.conn_mgr = manager
+
+    # ───── perform existing startup work ─────
     try:
         async with mongo_db() as db:
             latest_prompt = db.prompt.find_one(
-                { "_id": ObjectId("67b72394f8b916a8d95503f6") }
+                {"_id": ObjectId("67b72394f8b916a8d95503f6")}
             )
-
             if latest_prompt:
                 custom_prompt_template = latest_prompt["prompt"]
                 logger.info("✅ Loaded custom prompt template on startup.")
             else:
-                logger.info("No custom prompt found in the database.")
+                logger.info("ℹ️  No custom prompt found in the database.")
 
         faiss_text_db = FAISS.load_local(
             DB_TEXT_FAISS_PATH,
             HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL),
             allow_dangerous_deserialization=True,
         )
+        logger.info("✅ FAISS text index ready (%s).", DB_TEXT_FAISS_PATH)
 
     except Exception:
         logger.exception("❌ Error during startup lifespan")
 
-    yield  # ---- App runs after this ----
+    # ───────────── application runs ─────────────
+    yield
+
+    # ───────────── graceful shutdown ────────────
+    # (Nothing to tear down yet – FAISS is memory-mapped
+    #  and ConnectionManager has no external resources.)
+    if hasattr(app.state, "conn_mgr"):
+        del app.state.conn_mgr
+
 
 app = FastAPI(lifespan=lifespan)
 
@@ -123,6 +149,8 @@ app.add_middleware(
     allow_methods=["*"],  # Allows all HTTP methods (GET, POST, etc.)
     allow_headers=["*"],  # Allows all headers
 )
+
+app.include_router(lecture_router)
 
 # model_dict = llm.llm_models
 # model      = llm.get_selected_llm()   # or model_dict["GPT-4"]
@@ -190,6 +218,7 @@ connected_clients = {}
 connected_audio_clients = {}
 local_time_set = {}
 
+#Lecture end point
 @app.websocket("/ws/testdata/{robot_id}")
 async def testdata_websocket(websocket: WebSocket, robot_id: str):
     global data_test  # Declare data_test as global to access the variable
@@ -242,6 +271,7 @@ async def websocket_endpoint(websocket: WebSocket, lecture_id: str, connectrobot
             else:
                 full_text = "\n User: " + text_result
                 logger.info(f"Sending to connected clients: {full_text}")
+                logger.info(f"connected_audio_clients: {connected_audio_clients}")
                 for client in connected_audio_clients.get(robot_id, []):
                     if client != websocket:
                         await current_state_machine.ev_enter_conversation(client, lecture_states, full_text, robot_id)
@@ -629,8 +659,8 @@ async def handle_user_message(
     # Create a prompt for OpenAI to generate a greeting
     prompt = f"Generate a greeting message based on the current hour {hour}. Instead of 'Hello', make exact greeting based on current hour. And don't tell me about the exact time. Make this reply with one sentence. For example, 'Good morning', 'Good afternoon', 'Good evening' or 'Good night'"
 
-    # Call OpenAI API to generate the greeting
-    greeting_msg = generate_openai_response(prompt)
+    # Call OpenAI API to generate the greeting Chendra
+    greeting_msg =  await predict(prompt)
 
     formatted_prompt = build_chat_prompt(
         custom_template=custom_prompt_template,
@@ -650,7 +680,7 @@ async def handle_user_message(
         logger.error("Prompty for LLM is not ready.")
     #llm
   
-    result = predict(formatted_prompt)
+    result = await predict(formatted_prompt)
 
     if result:
         logger.info("Result is generated successfully!")
@@ -770,7 +800,7 @@ async def generate_and_send_ai_response(
     )
     
     # model = llm.llm_models[selectedModelName]
-    result = predict(formatted_prompt)
+    result = await predict(formatted_prompt)
     
     textTime = time.time()
     # logger.info("Text Generation Time:", int(textTime - start))
@@ -968,7 +998,7 @@ async def newContent(topic: Topic, db=Depends(get_db)):
     )
 
   
-    englishData = predict(formatted_prompt)
+    englishData = await predict(formatted_prompt)
 
     # Hindi Generation
     generateTextPrompt_Hindi = """ Please translate {text} into Hindi language. I don't need any statements, explanations, pronounciations and approaches. PLease give me translated result. """
@@ -976,7 +1006,7 @@ async def newContent(topic: Topic, db=Depends(get_db)):
     formatted_prompt_hindi = prompt_template_Hindi.format(
         text=englishData,
     )
-    hindiData = predict(formatted_prompt_hindi)
+    hindiData = await predict(formatted_prompt_hindi)
 
     # Telugu Generation
     generateTextPrompt_Telugu =  """ Please translate {text} into Telugu language. I don't need any statements, explanations, pronounciations and approaches. PLease give me translated result. """
@@ -984,7 +1014,7 @@ async def newContent(topic: Topic, db=Depends(get_db)):
     formatted_prompt_Telugu = prompt_template_Telugu.format(
         text=englishData,
     )
-    teluguData = predict(formatted_prompt_Telugu)
+    teluguData = await predict(formatted_prompt_Telugu)
     topic.content[-1].EnglishText = englishData
     topic.content[-1].HindiText = hindiData
     topic.content[-1].TeluguText = teluguData
