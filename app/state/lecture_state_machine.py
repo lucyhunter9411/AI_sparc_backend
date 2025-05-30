@@ -127,7 +127,7 @@ class LectureStateMachine:
 
     # -------------- entry callbacks --------------------------------------
 
-    async def ev_enter_conversation(self, websocket: WebSocket, lecture_states: Dict, message, robot_id):
+    async def enter_conversation(self, websocket: WebSocket, lecture_states: Dict, message, robot_id):
         logger.info(
             "State machine is passed through ev_enter_conversation event: %s",
             robot_id
@@ -139,7 +139,7 @@ class LectureStateMachine:
         self.trigger("ev_enter_conversation") 
         await self._handle_conversation()
 
-    async def ev_exit_student_qna(self):
+    async def exit_student_qna(self):
         self.trigger("ev_exit_student_qna")
 
     def on_enter_student_qna(self):
@@ -166,7 +166,7 @@ class LectureStateMachine:
         """Transition to the next topic"""
         logger.info(f"Lecture {self.lecture_id}: Moving to the next topic.")
 
-    async def ev_enter_student_qna(self, current_state_machine, robot_id_before, websocket, data, lecture_state, delay, retrieve_data, connectrobot):
+    async def enter_student_qna(self, current_state_machine, robot_id_before, websocket, data, lecture_state, delay, retrieve_data, connectrobot):
         """
         No positional arguments now – relies on `self.ctx` being set.
 
@@ -313,7 +313,7 @@ class LectureStateMachine:
     def on_enter_conversation(self):
         logger.info("Entered `st_conversation` state.")
 
-    def ev_start_lecture(self, websocket: WebSocket, lecture_states:Dict, connectrobot):
+    def start_lecture(self, websocket: WebSocket, lecture_states:Dict, connectrobot):
         logger.info(f"Lecture {self.lecture_id} started.")
         session_id = str(websocket.client)
         contents = get_contents()
@@ -332,7 +332,7 @@ class LectureStateMachine:
     def on_start_lecture(self):
         logger.info("Lecture started!!!!!!!")
 
-    async def ev_enter_content(self, data, lecture_state, websocket, connected_clients, connected_audio_clients, connectrobot):
+    async def enter_content(self, data, lecture_state, websocket, connected_clients, connected_audio_clients, connectrobot):
         """Enter static content state"""
         from main import chat_histories, MAX_HISTORY_LENGTH
         self.trigger("ev_enter_content")

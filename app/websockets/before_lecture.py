@@ -137,7 +137,6 @@ async def lecture_ws(
     Main handler for the before-lecture channel.
     """
     await mgr.connect(robot_id, ws)
-    print("--------------------robot_id part is working-------------------------")
 
     try:
         while True:

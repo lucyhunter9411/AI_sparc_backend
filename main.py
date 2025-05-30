@@ -172,51 +172,6 @@ async def health() -> dict[str, str]:
 # Update the structure of lecture_states to include connectrobot
 lecture_states: Dict[str, Dict[str, Dict[str, Dict]]] = {}
 lecture_states = get_lecture_states()
-
-# @app.post("/startLecture/{lecture_id}/{topic_id}")
-# async def start_lecture(lecture_id: str, topic_id: str, connectrobot: str = Form(...), db=Depends(get_db)):
-#     global topics, contents, time_list
-#     topics = list(db.topics.find({"lecture_id": lecture_id}).sort("_id", 1))
-
-#     start_index = next((i for i, topic in enumerate(topics) if str(topic["_id"]) == str(topic_id)), None)
-#     topics_lecture = topics[start_index:]
-#     contents = []
-#     time_list = []
-#     for topic in topics_lecture:
-#         for content in topic.get("content", []):
-#             contents.append(content)
-#             time_list.append(content["time"])
-#         contents.append({"text": "question", "time": topic["qna_time"]})
-#         time_list.append(topic["qna_time"])
-    
-#     set_contents(contents)
-#     set_time_list(time_list)
-    
-#     # Initialize lecture state if it doesn't exist
-#     if lecture_id not in lecture_states:
-#         lecture_states[lecture_id] = {}
-
-#     # Initialize session state for this connectrobot
-#     if connectrobot not in lecture_states[lecture_id]:
-#         lecture_states[lecture_id][connectrobot] = {
-#             "state_machine": LectureStateMachine(lecture_id),
-#             "sessions": {}
-#         }
-
-#     # Initialize session for the current websocket connection
-#     session_id = str(uuid.uuid4())  # Generate a unique session ID
-#     lecture_states[lecture_id][connectrobot]["sessions"][session_id] = {
-#         "is_active": True,
-#         "selectedLanguageName": "English",
-#         "contents": contents,
-#         "time_list": time_list,
-#         "connectrobot": connectrobot,
-#     }
-
-#     set_lecture_states(connectrobot, lecture_states)
-
-#     return {"status": "Lecture started", "lecture_id": lecture_id, "session_id": session_id}
-
 isSpeak = False
 text = ""
 data_test = {}
@@ -225,35 +180,10 @@ connected_clients = {}
 connected_audio_clients = {}
 local_time_set = {}
 
-#Lecture end point
-@app.websocket("/ws/testdata/{robot_id}")
-async def testdata_websocket(websocket: WebSocket, robot_id: str):
-    global data_test  # Declare data_test as global to access the variable
-    await websocket.accept()
-    try:
-        while True:
-            if len(data_test):
-                if robot_id in data_test:  # Check if the robot_id exists in data_test
-                    if data_test[robot_id]["data"]:
-                        selectedLanguageName = lecture_state_test[robot_id]["selectedLanguageName"]
-                        audio_stream = generate_audio_stream(data_test[robot_id]["data"].get(f"{selectedLanguageName}Text"), selectedLanguageName)
-
-                        audio_length = get_audio_length(audio_stream)
-                        audio_stream.seek(0)
-                        audio_base64 = base64.b64encode(audio_stream.read()).decode("utf-8")
-
-                        # You can process the data or send a response back
-                        await websocket.send_text(json.dumps({"text": data_test[robot_id]["data"], "audio": audio_base64, "type": "to_audio_client"}))
-                        data_test[robot_id]["data"] = None
-            await asyncio.sleep(1)  # Add a small delay to avoid busy waiting
-    except WebSocketDisconnect:
-        logger.error("Client disconnected from testdata WebSocket")
-
 robot_id_before = None
 
 @app.websocket("/ws/{lecture_id}/{connectrobot}")
 async def websocket_endpoint(websocket: WebSocket, lecture_id: str, connectrobot: str = None):
-    print("--------------------this part is working-------------------------")
     global isSpeak, text, data_test, robot_id_before
     await websocket.accept()
 
@@ -275,14 +205,14 @@ async def websocket_endpoint(websocket: WebSocket, lecture_id: str, connectrobot
 
             if with_style:
                 await websocket.send_text(json.dumps({"text": text_result}))
-                await current_state_machine.ev_enter_conversation(websocket, lecture_states, text_result, robot_id)
+                await current_state_machine.enter_conversation(websocket, lecture_states, text_result, robot_id)
             else:
                 full_text = "\n User: " + text_result
                 logger.info(f"Sending to connected clients: {full_text}")
                 logger.info(f"connected_audio_clients: {connected_audio_clients}")
                 for client in connected_audio_clients.get(robot_id, []):
                     if client != websocket:
-                        await current_state_machine.ev_enter_conversation(client, lecture_states, full_text, robot_id)
+                        await current_state_machine.enter_conversation(client, lecture_states, full_text, robot_id)
                 await websocket.send_text(json.dumps({"text": full_text}))
 
             if robot_id in lecture_state_test and "last_message_time" in lecture_state_test[robot_id]:
@@ -488,7 +418,6 @@ async def selectLanguage(lecture_id: str, languageName: str = Form(...)):
 async def change_language(lecture_id: str, languageName: str = Form(...)):
     if lecture_id not in lecture_states:
         return {"message": "Lecture not started yet."}
-    
     # Update the language for all active sessions
     for session_id in lecture_states[lecture_id]["sessions"]:
         lecture_states[lecture_id]["sessions"][session_id]["selectedLanguageName"] = languageName

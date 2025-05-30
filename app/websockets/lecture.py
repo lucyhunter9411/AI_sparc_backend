@@ -1,16 +1,16 @@
 # lecture.py
 
 import json
-from fastapi import WebSocket, WebSocketDisconnect
+from fastapi import WebSocket, WebSocketDisconnect, APIRouter, Form, Depends
 from app.state.lecture_state_machine import LectureStateMachine
-from app.services.shared_data import get_lecture_states
 from typing import Dict, List
 import logging
-
-from fastapi import APIRouter, Form, Depends
 from app.api.deps import get_db
 from app.services.shared_data import set_contents, set_time_list, set_session_id_set, get_session_id_set
 import uuid
+import asyncio
+import base64
+from app.utils.audio import generate_audio_stream, get_audio_length
 
 router = APIRouter()
 
@@ -77,6 +77,39 @@ async def start_lecture(lecture_id: str, topic_id: str, connectrobot: str = Form
 
     return {"status": "Lecture started", "lecture_id": lecture_id, "session_id": session_id}
 
+@router.websocket("/ws/{robot_id}/lesson_audio")
+async def websocket_lesson_audio(websocket: WebSocket, robot_id: str):
+    global data_test, lecture_state_test  # use globals from this module
+    await websocket.accept()
+    try:
+        while True:
+            if len(data_test):
+                if robot_id in data_test:  # Check if the robot_id exists in data_test
+                    if data_test[robot_id].get("data"):
+                        selectedLanguageName = lecture_state_test[robot_id]["selectedLanguageName"]
+                        audio_stream = generate_audio_stream(
+                            data_test[robot_id]["data"].get(f"{selectedLanguageName}Text"), selectedLanguageName
+                        )
+
+                        audio_length = get_audio_length(audio_stream)
+                        audio_stream.seek(0)
+                        audio_base64 = base64.b64encode(audio_stream.read()).decode("utf-8")
+
+                        # You can process the data or send a response back
+                        await websocket.send_text(
+                            json.dumps(
+                                {
+                                    "text": data_test[robot_id]["data"],
+                                    "audio": audio_base64,
+                                    "type": "to_audio_client",
+                                }
+                            )
+                        )
+                        data_test[robot_id]["data"] = None
+            await asyncio.sleep(1)  # Add a small delay to avoid busy waiting
+    except WebSocketDisconnect:
+        logger.error("Client disconnected from testdata WebSocket")
+
 # WebSocket endpoint for lecture
 async def lecture_websocket_endpoint(websocket: WebSocket, lecture_id: str, connectrobot: str):
 
@@ -104,10 +137,7 @@ async def lecture_websocket_endpoint(websocket: WebSocket, lecture_id: str, conn
     state_machine = lecture_states[lecture_id][connectrobot]["state_machine"]
     current_state_machine = state_machine
     state_machine.ev_init() 
-    state_machine.ev_start_lecture(websocket, lecture_states, connectrobot)
-    print("-----------------", session_id, "--------------------")
-    print(lecture_states[lecture_id][connectrobot]["sessions"])
-    # print(lecture_states[lecture_id][connectrobot]["sessions"][session_id])
+    state_machine.start_lecture(websocket, lecture_states, connectrobot)
     lecture_state_test[connectrobot] = lecture_states[lecture_id][connectrobot]["sessions"][session_id]
     retrieve_data = "\n"
 
@@ -132,12 +162,12 @@ async def lecture_websocket_endpoint(websocket: WebSocket, lecture_id: str, conn
                 retrieve_data=retrieve_data,
                 connectrobot=connectrobot,
             )
-                await state_machine.ev_enter_student_qna(current_state_machine, robot_id_before, websocket, data_frontend, lecture_state_test[connectrobot], delay, retrieve_data, connectrobot)                
+                await state_machine.enter_student_qna(current_state_machine, robot_id_before, websocket, data_frontend, lecture_state_test[connectrobot], delay, retrieve_data, connectrobot)                
                 state_machine.ev_to_conducting()
             else:
                 data_test[connectrobot]["data"] = data_frontend
                 logger.info("data_test: %s", data_test)
-                await state_machine.ev_enter_content(data_frontend, lecture_state_test[connectrobot], websocket, connected_clients, connected_audio_clients, connectrobot)
+                await state_machine.enter_content(data_frontend, lecture_state_test[connectrobot], websocket, connected_clients, connected_audio_clients, connectrobot)
 
         if not lecture_state_test[connectrobot]["is_active"]:
             state_machine.ev_init()
