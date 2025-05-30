@@ -313,14 +313,14 @@ class LectureStateMachine:
     def on_enter_conversation(self):
         logger.info("Entered `st_conversation` state.")
 
-    def ev_start_lecture(self, websocket: WebSocket, lecture_states:Dict):
+    def ev_start_lecture(self, websocket: WebSocket, lecture_states:Dict, connectrobot):
         logger.info(f"Lecture {self.lecture_id} started.")
         session_id = str(websocket.client)
         contents = get_contents()
         time_list = get_time_list()
-        if session_id not in lecture_states[self.lecture_id]["sessions"]:
+        if session_id not in lecture_states[self.lecture_id][connectrobot]["sessions"]:
             selectedLanguageName = lecture_states[self.lecture_id].get("selectedLanguageName", "English")
-            lecture_states[self.lecture_id]["sessions"][session_id] = {
+            lecture_states[self.lecture_id][connectrobot]["sessions"][session_id] = {
                 "is_active": True,
                 "selectedLanguageName": selectedLanguageName,
                 "websocket": websocket,

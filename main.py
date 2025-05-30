@@ -43,8 +43,12 @@ from app.state.lecture import LectureStateMachine
 from app.services.shared_data import set_contents, set_time_list
 from app.services.vision_service import  handle_vision_data, get_data
 from datetime import datetime
-from app.services.shared_data import get_selected_student
+from app.services.shared_data import get_selected_student, set_lecture_states
 from app.websockets.connection_manager import ConnectionManager
+from app.websockets.lecture import lecture_websocket_endpoint
+from app.websockets.lecture import router as lecture_router
+from app.websockets.before_lecture import router as before_lecture_router
+from app.services.shared_data import get_lecture_states
 
 # --- add just above the FastAPI() call --------------
 from contextlib import asynccontextmanager
@@ -86,7 +90,6 @@ EMBEDDING_MODEL    = "sentence-transformers/all-MiniLM-L6-v2"
 faiss_text_db = None      # will be initialised once in lifespan
 
 
-from app.websockets.before_lecture import router as lecture_router
 
 manager = ConnectionManager() 
 
@@ -151,6 +154,7 @@ app.add_middleware(
 )
 
 app.include_router(lecture_router)
+app.include_router(before_lecture_router)
 
 # model_dict = llm.llm_models
 # model      = llm.get_selected_llm()   # or model_dict["GPT-4"]
@@ -167,48 +171,51 @@ async def health() -> dict[str, str]:
 
 # Update the structure of lecture_states to include connectrobot
 lecture_states: Dict[str, Dict[str, Dict[str, Dict]]] = {}
+lecture_states = get_lecture_states()
 
-@app.post("/startLecture/{lecture_id}/{topic_id}")
-async def start_lecture(lecture_id: str, topic_id: str, connectrobot: str = Form(...), db=Depends(get_db)):
-    global topics, contents, time_list
-    topics = list(db.topics.find({"lecture_id": lecture_id}).sort("_id", 1))
+# @app.post("/startLecture/{lecture_id}/{topic_id}")
+# async def start_lecture(lecture_id: str, topic_id: str, connectrobot: str = Form(...), db=Depends(get_db)):
+#     global topics, contents, time_list
+#     topics = list(db.topics.find({"lecture_id": lecture_id}).sort("_id", 1))
 
-    start_index = next((i for i, topic in enumerate(topics) if str(topic["_id"]) == str(topic_id)), None)
-    topics_lecture = topics[start_index:]
-    contents = []
-    time_list = []
-    for topic in topics_lecture:
-        for content in topic.get("content", []):
-            contents.append(content)
-            time_list.append(content["time"])
-        contents.append({"text": "question", "time": topic["qna_time"]})
-        time_list.append(topic["qna_time"])
+#     start_index = next((i for i, topic in enumerate(topics) if str(topic["_id"]) == str(topic_id)), None)
+#     topics_lecture = topics[start_index:]
+#     contents = []
+#     time_list = []
+#     for topic in topics_lecture:
+#         for content in topic.get("content", []):
+#             contents.append(content)
+#             time_list.append(content["time"])
+#         contents.append({"text": "question", "time": topic["qna_time"]})
+#         time_list.append(topic["qna_time"])
     
-    set_contents(contents)
-    set_time_list(time_list)
+#     set_contents(contents)
+#     set_time_list(time_list)
     
-    # Initialize lecture state if it doesn't exist
-    if lecture_id not in lecture_states:
-        lecture_states[lecture_id] = {}
+#     # Initialize lecture state if it doesn't exist
+#     if lecture_id not in lecture_states:
+#         lecture_states[lecture_id] = {}
 
-    # Initialize session state for this connectrobot
-    if connectrobot not in lecture_states[lecture_id]:
-        lecture_states[lecture_id][connectrobot] = {
-            "state_machine": LectureStateMachine(lecture_id),
-            "sessions": {}
-        }
+#     # Initialize session state for this connectrobot
+#     if connectrobot not in lecture_states[lecture_id]:
+#         lecture_states[lecture_id][connectrobot] = {
+#             "state_machine": LectureStateMachine(lecture_id),
+#             "sessions": {}
+#         }
 
-    # Initialize session for the current websocket connection
-    session_id = str(uuid.uuid4())  # Generate a unique session ID
-    lecture_states[lecture_id][connectrobot]["sessions"][session_id] = {
-        "is_active": True,
-        "selectedLanguageName": "English",
-        "contents": contents,
-        "time_list": time_list,
-        "connectrobot": connectrobot,
-    }
+#     # Initialize session for the current websocket connection
+#     session_id = str(uuid.uuid4())  # Generate a unique session ID
+#     lecture_states[lecture_id][connectrobot]["sessions"][session_id] = {
+#         "is_active": True,
+#         "selectedLanguageName": "English",
+#         "contents": contents,
+#         "time_list": time_list,
+#         "connectrobot": connectrobot,
+#     }
 
-    return {"status": "Lecture started", "lecture_id": lecture_id, "session_id": session_id}
+#     set_lecture_states(connectrobot, lecture_states)
+
+#     return {"status": "Lecture started", "lecture_id": lecture_id, "session_id": session_id}
 
 isSpeak = False
 text = ""
@@ -246,6 +253,7 @@ robot_id_before = None
 
 @app.websocket("/ws/{lecture_id}/{connectrobot}")
 async def websocket_endpoint(websocket: WebSocket, lecture_id: str, connectrobot: str = None):
+    print("--------------------this part is working-------------------------")
     global isSpeak, text, data_test, robot_id_before
     await websocket.accept()
 
@@ -414,68 +422,7 @@ async def websocket_endpoint(websocket: WebSocket, lecture_id: str, connectrobot
 
 
     else:
-        # Check if the lecture_id exists in lecture_states
-        if lecture_id not in lecture_states or connectrobot not in lecture_states[lecture_id]:
-            # Initialize a new entry for the lecture_id and connectrobot
-            lecture_states[lecture_id][connectrobot] = {
-                "state_machine": LectureStateMachine(lecture_id),
-                "sessions": {}
-            }
-
-        # Check if the session_id already exists for this lecture_id and connectrobot
-        if session_id not in lecture_states[lecture_id][connectrobot]["sessions"]:
-            # Initialize a new session for this lecture_id and connectrobot
-            lecture_states[lecture_id][connectrobot]["sessions"][session_id] = {
-                "is_active": True,
-                "selectedLanguageName": "English",
-                # You can add other session-specific data here
-            }
-
-        state_machine = lecture_states[lecture_id][connectrobot]["state_machine"]
-        update_current_state_machine(state_machine)
-        state_machine.ev_init() 
-        state_machine.ev_start_lecture(websocket, lecture_states)
-        lecture_state_test[connectrobot] = lecture_states[lecture_id]["sessions"][session_id]
-        retrieve_data = "\n"
-
-        try: 
-            for idx, delay in enumerate(lecture_state_test[connectrobot]["time_list"]):   
-                state_machine.ev_to_conducting()
-                data_frontend = lecture_state_test[connectrobot]["contents"][idx]
-                logger.info("data_frontend: %s", data_frontend)
-                # before using `data_test[connectrobot]["data"] = ...`, add this:
-                if connectrobot not in data_test:
-                    data_test[connectrobot] = {}
-
-                retrieve_data += data_frontend.get("text", "") + "\n"
-
-                if data_frontend.get("text") == "question":
-                    await websocket.send_text(json.dumps({"text": data_frontend.get("text")}))  
-                    state_machine.set_ctx(
-                    websocket=websocket,
-                    data=data_frontend,
-                    lecture_state=lecture_state_test[connectrobot],
-                    delay=delay,
-                    retrieve_data=retrieve_data,
-                    connectrobot=connectrobot,
-                )
-                    await state_machine.ev_enter_student_qna(current_state_machine, robot_id_before, websocket, data_frontend, lecture_state_test[connectrobot], delay, retrieve_data, connectrobot)                
-                    state_machine.ev_to_conducting()
-                else:
-                    data_test[connectrobot]["data"] = data_frontend
-                    logger.info("data_test: %s", data_test)
-                    await state_machine.ev_enter_content(data_frontend, lecture_state_test[connectrobot], websocket, connected_clients, connected_audio_clients, connectrobot)
-
-            if not lecture_state_test[connectrobot]["is_active"]:
-                state_machine.ev_init()
-                await websocket.close()
-                return
-
-        except WebSocketDisconnect:
-            logger.exception("❌ Client disconnected unexpectedly.")
-            del lecture_states[lecture_id][session_id]
-            state_machine.ev_init()
-            await websocket.close()
+        await lecture_websocket_endpoint(websocket, lecture_id, connectrobot)
 
 def convert_audio_to_bytes(audio_path):
     try:

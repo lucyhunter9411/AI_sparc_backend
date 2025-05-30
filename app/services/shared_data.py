@@ -15,6 +15,8 @@ hand_raising_count = []
 name_array = []
 selected_student = []
 local_time_vision = []
+lecture_states = {}
+session_id_set = []
 
 def set_contents(value):
     global contents
@@ -94,3 +96,25 @@ def get_local_time_vision(robot_id):
         if robot_id in entry:
             return entry[robot_id]  # Return the count for the robot_id
     return 0  # Return 0 if robot_id not found
+
+def set_session_id_set(robot_id, value):
+    global session_id_set
+    for entry in session_id_set:
+        if robot_id in entry:
+            entry[robot_id] = value
+            return
+    # If not found, append a new dictionary
+    session_id_set.append({robot_id: value})
+
+def get_session_id_set(robot_id):
+    for entry in session_id_set:
+        if robot_id in entry:
+            return entry[robot_id]
+    return None
+
+def set_lecture_states(value):
+    global lecture_states
+    lecture_states = value
+
+def get_lecture_states():
+    return lecture_states
