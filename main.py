@@ -39,7 +39,7 @@ from app.utils.audio import generate_audio_stream, get_audio_length
 from app.services.stt_service import transcribe_audio
 from app.services.llm_service import build_chat_prompt
 import app.services.llm as llm
-from app.state.lecture import LectureStateMachine
+from app.state.lecture_state_machine import LectureStateMachine
 from app.services.shared_data import set_contents, set_time_list
 from app.services.vision_service import  handle_vision_data, get_data
 from datetime import datetime

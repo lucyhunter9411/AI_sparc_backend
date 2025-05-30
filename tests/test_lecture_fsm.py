@@ -1,5 +1,5 @@
 """
-Unit-tests for app.state.lecture.LectureStateMachine
+Unit-tests for app.state.lecture_state_machine.LectureStateMachine
 """
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import asyncio
 import inspect
 import pytest
 
-from app.state.lecture import LectureStateMachine
+from app.state.lecture_state_machine import LectureStateMachine
 
 
 # --------------------------------------------------------------------------- #

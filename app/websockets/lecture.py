@@ -2,14 +2,13 @@
 
 import json
 from fastapi import WebSocket, WebSocketDisconnect
-from app.state.lecture import LectureStateMachine
+from app.state.lecture_state_machine import LectureStateMachine
 from app.services.shared_data import get_lecture_states
 from typing import Dict, List
 import logging
 
 from fastapi import APIRouter, Form, Depends
 from app.api.deps import get_db
-from app.state.lecture import LectureStateMachine
 from app.services.shared_data import set_contents, set_time_list, set_session_id_set, get_session_id_set
 import uuid
 
