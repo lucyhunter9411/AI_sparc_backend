@@ -81,6 +81,7 @@ class QnA(BaseModel):
 
 class Prompt(BaseModel):
     id: Optional[PyObjectId] = Field(alias="_id", default=None)
+    name: str = Field(...)
     prompt: str = Field(...)  
     class Config:
         json_encoders = {ObjectId: str}

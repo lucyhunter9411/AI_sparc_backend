@@ -1,5 +1,5 @@
 # shared_data.py
-
+from typing import Dict
 from collections import defaultdict
 from collections import defaultdict, deque
 
@@ -15,8 +15,12 @@ hand_raising_count = []
 name_array = []
 selected_student = []
 local_time_vision = []
-lecture_states = {}
+lecture_states: Dict[str, Dict[str, Dict[str, Dict]]] = {}
+language_selected: Dict[str, Dict[str, Dict[str, Dict]]] = {}
 session_id_set = []
+connected_audio_clients = []
+saveConv = []
+audio_source = []
 
 def set_contents(value):
     global contents
@@ -118,3 +122,54 @@ def set_lecture_states(value):
 
 def get_lecture_states():
     return lecture_states
+
+def set_language_selected(value):
+    global language_selected
+    language_selected = value
+
+def get_language_selected():
+    return language_selected
+
+def set_connected_audio_clients(robot_id, value):
+    global connected_audio_clients
+    for entry in connected_audio_clients:
+        if robot_id in entry:
+            entry[robot_id] = value
+            return
+    # If not found, append a new dictionary
+    connected_audio_clients.append({robot_id: value})
+
+def get_connected_audio_clients(robot_id):
+    for entry in connected_audio_clients:
+        if robot_id in entry:
+            return entry[robot_id]
+    return []
+
+def set_saveConv(robot_id, value):
+    global saveConv
+    for entry in saveConv:
+        if robot_id in entry:
+            entry[robot_id] = value
+            return
+    # If not found, append a new dictionary
+    saveConv.append({robot_id: value})
+
+def get_saveConv(robot_id):
+    for entry in saveConv:
+        if robot_id in entry:
+            return entry[robot_id]
+    return []
+
+def set_audio_source(robot_id, value):
+    for entry in audio_source:
+        if robot_id in entry:
+            entry[robot_id] = value
+            return
+    # If not found, append a new dictionary
+    audio_source.append({robot_id: value})
+    
+def get_audio_source(robot_id):
+    for entry in audio_source:
+        if robot_id in entry:
+            return entry[robot_id]
+    return []

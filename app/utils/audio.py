@@ -19,7 +19,7 @@ def generate_audio_stream(text: str, language: str):
 
     lang_code = detect(text)
     lang_map  = {"en": "English", "hi": "Hindi", "te": "Telugu"}
-    language  = lang_map.get(lang_code, "Unknown")
+    language  = lang_map.get(lang_code, "English")
     logger.info("language detected: %s", language)
 
     if language == "English":

@@ -2,11 +2,11 @@
 /ws/{robot_id}/before/lecture
 =============================
 
-• A client connects, sends **one** “register” frame to declare its role
+• A client connects, sends **one** "register" frame to declare its role
   (``{"type":"register","data":{"client":"speech"}}`` or
    ``{"type":"register","data":{"client":"audio"}}``).
 
-• “speech” frames contain a base-64 WAV clip; the backend
+• "speech" frames contain a base-64 WAV clip; the backend
 
       1. runs STT (Whisper / Azure etc.),
       2. adds the user turn to the running conversation history,
@@ -17,10 +17,10 @@
       7. broadcasts the TTS WAV **only** to sockets that registered
          as *audio*.
 
-• “audio” frames would be handled symmetrically if you ever send them
+• "audio" frames would be handled symmetrically if you ever send them
   the other way (left as a TODO).
 
-• “ping” → “pong” is unchanged.
+• "ping" → "pong" is unchanged.
 
 Everything heavy (STT, LLM, TTS) runs in an `asyncio.create_task()` so
 the socket never blocks long enough to miss keep-alive pings.
@@ -28,7 +28,7 @@ the socket never blocks long enough to miss keep-alive pings.
 
 from __future__ import annotations
 
-import asyncio, base64, json, logging, tempfile, time
+import asyncio, logging, time
 from typing import Any
 
 from fastapi import APIRouter, Depends, WebSocket
@@ -38,13 +38,11 @@ from app.api.deps import get_conn_mgr                  # → ConnectionManager s
 from app.websockets.connection_manager import ConnectionManager
 from app.schemas.ws import WSMessage
 
-from app.utils.censor import sanitize_text
-# --- services ---------------------------------------------------------------
-from app.services.stt_service import transcribe_audio
-from app.services.llm_service import build_chat_prompt as build_prompt
-from app.services.llm_service import predict as llm_predict
-from app.utils.audio import generate_audio_stream
-from app.services import shared_data                           # conversation history
+
+# --- services ---------------------------------------------------------------                   # conversation history
+from app.services.vision_service import  handle_vision_data
+from app.services.shared_data import set_connected_audio_clients, set_audio_source, get_audio_source
+from app.services.audio_chat_pipeline import pipeline
 import main
 # ---------------------------------------------------------------------------
 
@@ -52,83 +50,9 @@ router = APIRouter()
 log = logging.getLogger(__name__)
 
 
-# ───────────────────────── helper coroutines ────────────────────────────────
-async def _tts_bytes(text: str, lang_hint: str = "") -> bytes:
-    """
-    Run the blocking TTS service in a worker thread; return WAV bytes.
-    """
-    wav_io = await asyncio.to_thread(generate_audio_stream, text, lang_hint)
-    wav_io.seek(0)
-    return wav_io.read()
-
-
-async def _pipeline(
-    robot_id: str,
-    mgr: ConnectionManager,
-    msg: WSMessage,
-) -> None:
-    """
-    Full STT → LLM → TTS pipeline for one 'speech' clip.
-    """
-
-    # 1. decode wav clip to a temp file ------------------------------------------------
-    b64_clip: str = msg.data["audio"]
-    pcm_bytes = base64.b64decode(b64_clip)
-    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-        tmp.write(pcm_bytes)
-        wav_path = tmp.name
-
-    # 2. speech-to-text ---------------------------------------------------------------
-    stt_backend = msg.data.get("backend", "whisper-1")
-    user_text = await transcribe_audio(wav_path, stt_backend)
-    log.info("[%s] 📝 transcript: %s", robot_id, user_text)
-
-    # update conversation history --------------------------------------------------
-   
-    history = shared_data.conversations[robot_id]
-    history.append(user_text)          # ← store plain string, not dict
-
-    # ───── 2-b. Retrieve supporting context from FAISS  ───────────────
-    retrieved_docs = main.faiss_text_db.similarity_search(user_text, k=5)
-    if retrieved_docs: log.info("FIASS match found")
-    retrieved_texts = (
-       "\n".join(sanitize_text(doc.page_content) for doc in retrieved_docs)
-        if retrieved_docs else "No relevant context found."             
-    )
-
-    # 3. build prompt --------------------------------------------------------------
-    prompt = build_prompt(
-        query=user_text,
-        context=retrieved_texts,                           
-        history=list(history),                      # deque → list[str]
-        custom_template=getattr(main, "custom_prompt_template", ""),
-    )
-   
-    # 4. LLM --------------------------------------------------------------------------
-    assistant_text = await llm_predict(prompt)
-    history.append(assistant_text)     # ← store plain string
-    log.info("🤖 LLM response received")
-    #log.info("[%s] 🤖 reply: %s", robot_id, assistant_text)
-
-    # 5. text-to-speech ---------------------------------------------------------------
-    wav_bytes = await _tts_bytes(assistant_text)
-    secs = len(wav_bytes) / (16_000 * 2)      # 16-kHz mono 16-bit
-    log.info("[%s] 🔊 TTS %.2fs (%.1f kB)", robot_id, secs, len(wav_bytes)/1024)
-
-    # 6. broadcast to *audio* clients only -------------------------------------------
-    out_msg: dict[str, Any] = {
-        "robot_id": robot_id,
-        "type":     "model",
-        "text":     assistant_text,
-        "audio":    base64.b64encode(wav_bytes).decode(),
-        "ts":       time.time(),
-    }
-    await mgr.send_role(robot_id, "audio", out_msg)
-
-
 # ───────────────────────── websocket entrypoint ─────────────────────────────
 @router.websocket("/ws/{robot_id}/before/lecture")
-async def lecture_ws(
+async def before_lecture(
     ws: WebSocket,
     robot_id: str,
     mgr: ConnectionManager = Depends(get_conn_mgr),
@@ -137,6 +61,7 @@ async def lecture_ws(
     Main handler for the before-lecture channel.
     """
     await mgr.connect(robot_id, ws)
+    vision_task = asyncio.create_task(handle_vision_data("st_waiting", robot_id, ws))
 
     try:
         while True:
@@ -148,6 +73,14 @@ async def lecture_ws(
             if msg.type == "register":
                 role = (msg.data or {}).get("client")
                 mgr.tag(ws, role or "unknown")
+                if role == "audio":
+                    set_connected_audio_clients(robot_id, ws)
+
+                if role == "speech":
+                    set_audio_source(robot_id, "speech")
+                if role == "frontend":
+                    set_audio_source(robot_id, "frontend")
+                
                 log.info("[%s] ➕ %s client registered", robot_id, role)
                 continue
 
@@ -160,10 +93,29 @@ async def lecture_ws(
 
             # ––– main speech pipeline ---------------------------------------
             if msg.type == "speech":
-                asyncio.create_task(_pipeline(robot_id, mgr, msg))
-                await ws.send_json(
-                    WSMessage(type="speech_ok", data={}, ts=time.time()).model_dump()
-                )
+                audio_source = get_audio_source(robot_id)
+                result = await pipeline(robot_id, msg, audio_source)
+                
+                # Send user's transcribed text
+                if audio_source == "frontend":
+                    await mgr.send_role(robot_id, "frontend", result["in_msg"])
+                elif audio_source == "speech":
+                    await mgr.send_role(robot_id, "speech", result["in_msg"])
+
+                # Send assistant's response
+                out_msg = {
+                    "robot_id": robot_id,
+                    "type": "model",
+                    "text": result["assistant_text"],
+                    "audio": list(result["wav_bytes"]),
+                    "ts": time.time(),
+                }
+                
+                if audio_source == "frontend":
+                    await mgr.send_role(robot_id, "frontend", out_msg)
+                elif audio_source == "speech":
+                    await mgr.send_role(robot_id, "audio", out_msg)
+                    
                 continue
 
             # ––– (future) audio->speech routing -----------------------------
@@ -178,3 +130,8 @@ async def lecture_ws(
 
     finally:
         mgr.disconnect(robot_id, ws)
+        vision_task.cancel()
+        try:
+            await vision_task
+        except asyncio.CancelledError:
+            log.info("Vision task cancelled cleanly.")

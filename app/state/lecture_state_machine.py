@@ -19,7 +19,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
-from fastapi import WebSocket, WebSocketDisconnect
+from fastapi import WebSocket, WebSocketDisconnect, Depends
 from transitions import Machine, State
 
 import base64
@@ -27,8 +27,10 @@ import wave
 
 from app.services.stt_service import transcribe_audio
 from app.utils.audio import generate_audio_stream, get_audio_length
-from app.services.shared_data import get_contents, get_time_list, get_hand_raising_count
+from app.services.shared_data import get_contents, get_time_list, get_hand_raising_count, get_connected_audio_clients
 from app.services.vision_service import  handle_vision_data
+from app.websockets.connection_manager import ConnectionManager
+from app.api.deps import get_conn_mgr
 
 logger = logging.getLogger(__name__)
 
@@ -175,12 +177,10 @@ class LectureStateMachine:
         if not self.ctx:
             raise RuntimeError("Context not set – call set_ctx() first")
         self.trigger("ev_enter_student_qna")
-        session_id = str(websocket.client)
         lecture_state["question_time_start"] = time.time()
         lecture_state["last_message_time"] = time.time()
         question_active = True
 
-        # task1 = asyncio.create_task(self.wait_for_user_message(websocket, question_active, lecture_state, connectrobot))
         task2 = asyncio.create_task(self.check_question_timeout(websocket, question_active, lecture_state, delay, retrieve_data))
         task3 = asyncio.create_task(self.check_hand_raising(current_state_machine, robot_id_before, websocket, question_active, lecture_state, connectrobot))
 
@@ -192,51 +192,45 @@ class LectureStateMachine:
 
 
     async def check_hand_raising(self, current_state_machine, robot_id_before, websocket, question_active, lecture_state, connectrobot):
-        from main import handle_user_message
         while question_active:
             current_count = get_hand_raising_count(connectrobot)
             logger.info(f"Current hand_raising_count: {current_count}")
             await asyncio.sleep(1)
             if current_count > 0:
                 logger.info("Someone is raising hand")
-                answer_question = True
-
-                robot_text = "robot_text"
                 await handle_vision_data(current_state_machine, robot_id_before, websocket)
-
                 self.trigger("ev_enter_process_qna")
-                while answer_question:
-                    data = await websocket.receive_text()
-                    message = json.loads(data)
-                    if "audio" in message:
-                        audio_path = f"{connectrobot}received_audio.wav"
-                        if isinstance(message["audio"], str):
-                            audio_bytes = base64.b64decode(message["audio"])
-                        else:
-                            logger.warning(f"⚠️ Invalid audio data format: {type(message['audio'])}")
-                            return
-                        if "style" in message:
+
+                # answer_question = True
+                # while answer_question:
+                #     data = await websocket.receive_text()
+                #     message = json.loads(data)
+                #     if "audio" in message:
+                #         audio_path = f"{connectrobot}received_audio.wav"
+                #         if isinstance(message["audio"], str):
+                #             audio_bytes = base64.b64decode(message["audio"])
+                #         else:
+                #             logger.warning(f"⚠️ Invalid audio data format: {type(message['audio'])}")
+                #             return
+                #         if "style" in message:
                             
-                            with wave.open(audio_path, "wb") as wf:
-                                wf.setnchannels(1) 
-                                wf.setsampwidth(2)
-                                wf.setframerate(16000) 
-                                wf.writeframes(audio_bytes)
+                #             with wave.open(audio_path, "wb") as wf:
+                #                 wf.setnchannels(1) 
+                #                 wf.setsampwidth(2)
+                #                 wf.setframerate(16000) 
+                #                 wf.writeframes(audio_bytes)
 
-                            model = message["backend"]
-                            logger.info("STT model for the interrupting student: %s", model)
-                            #stt
-                            text = await transcribe_audio(audio_path, model)
-                            logger.info("Text for the interrupting student: %s", text)
-                            await websocket.send_text(json.dumps({"questionResponse": text}))
+                #             model = message["backend"]
+                #             logger.info("STT model for the interrupting student: %s", model)
+                #             #stt
+                #             text = await transcribe_audio(audio_path, model)
+                #             logger.info("Text for the interrupting student: %s", text)
+                #             await websocket.send_text(json.dumps({"questionResponse": text}))
 
-                            duration = await handle_user_message(websocket, lecture_state, text, connectrobot)
-                            await asyncio.sleep(duration)
-                    answer_question = False
-                self.trigger("ev_exit_process_qna")
-
-        if vision_task and not vision_task.done():
-            vision_task.cancel()         
+                #             # duration = await handle_user_message(websocket, lecture_state, text, connectrobot)
+                #             # await asyncio.sleep(duration)
+                #     answer_question = False
+                self.trigger("ev_exit_process_qna")        
     logger.info("Exiting check_hand_raising function.")
 
     async def check_question_timeout(self, websocket, question_active, lecture_state, delay, retrieve_data):
@@ -332,7 +326,7 @@ class LectureStateMachine:
     def on_start_lecture(self):
         logger.info("Lecture started!!!!!!!")
 
-    async def enter_content(self, data, lecture_state, websocket, connected_clients, connected_audio_clients, connectrobot):
+    async def enter_content(self, data, lecture_state, websocket, connectrobot, mgr: ConnectionManager = Depends(get_conn_mgr),):
         """Enter static content state"""
         from main import chat_histories, MAX_HISTORY_LENGTH
         self.trigger("ev_enter_content")
@@ -344,7 +338,20 @@ class LectureStateMachine:
         audio_length = get_audio_length(audio_stream)
         audio_stream.seek(0)
         audio_base64 = base64.b64encode(audio_stream.read()).decode("utf-8")
-        if connectrobot in connected_audio_clients:
+
+        print("connectrobot:", connectrobot)
+        connected_audio_clients = get_connected_audio_clients(connectrobot)
+        print("connected_audio_clients:", connected_audio_clients)
+           
+        # Check if the WebSocket is still open by sending a ping
+        is_websocket_alive = True
+        try:
+            await connected_audio_clients.send_text(json.dumps({"type": "ping"}))
+        except Exception as e:
+            is_websocket_alive = False
+            logger.warning(f"WebSocket is not connected. Skipping message send. Error: {e}")
+
+        if is_websocket_alive:
             await websocket.send_text(json.dumps({"text": data.get(f"{selectedLanguageName}Text"), "type": "static","image":data.get("image")}))
         else:
             await websocket.send_text(json.dumps({"text": data.get(f"{selectedLanguageName}Text"), "audio": audio_base64, "type": "static","image":data.get("image")}))

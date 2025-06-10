@@ -31,7 +31,10 @@ async def handle_vision_data(current_state_machine, robot_id, websocket):
 
             # Always get the current state based on the latest lecture_id
             if current_state_machine:
-                current_state = current_state_machine.state  # Get the current state name
+                if current_state_machine == "st_waiting":
+                    current_state = "st_waiting"
+                else:
+                    current_state = current_state_machine.state  # Get the current state name
 
                 if current_count > 0 and current_state == "st_waiting":
                     hour = get_local_time_vision(robot_id)

@@ -11,44 +11,27 @@ from langchain_community.vectorstores import FAISS
 from langchain.chat_models import AzureChatOpenAI
 from langchain.prompts import PromptTemplate
 from langchain_community.embeddings import HuggingFaceEmbeddings
-from pymongo import MongoClient
 from typing import List, Dict
 import logging      
-from urllib.parse import quote_plus
 import shutil
 import os 
-import asyncio
 import time
 import json
-import io
 import base64
 from pydantic import BaseModel
 from Schema import QnA, Topic
 from bson import ObjectId
-import azure.cognitiveservices.speech as speechsdk
 import wave
-from transitions import Machine,State
-from langdetect import detect
-import openai
-import speech_recognition as sr
-import uuid  # Import uuid for generating unique session IDs
 from bson import ObjectId
 from app.api.deps import get_db
 from app.api.deps import get_db
-from app.utils.audio import generate_audio_stream, get_audio_length
-from app.services.stt_service import transcribe_audio
-from app.services.llm_service import build_chat_prompt
+from app.utils.audio import generate_audio_stream
 import app.services.llm as llm
-from app.state.lecture_state_machine import LectureStateMachine
-from app.services.shared_data import set_contents, set_time_list
-from app.services.vision_service import  handle_vision_data, get_data
-from datetime import datetime
-from app.services.shared_data import get_selected_student, set_lecture_states
+from app.services.vision_service import  get_data
+from app.services.shared_data import get_lecture_states, set_language_selected, get_language_selected, set_saveConv
 from app.websockets.connection_manager import ConnectionManager
-from app.websockets.lecture import lecture_websocket_endpoint
 from app.websockets.lecture import router as lecture_router
 from app.websockets.before_lecture import router as before_lecture_router
-from app.services.shared_data import get_lecture_states
 
 # --- add just above the FastAPI() call --------------
 from contextlib import asynccontextmanager
@@ -70,14 +53,6 @@ setup_logging(level="INFO")        # single call replaces logging.basicConfig
 logger = logging.getLogger(__name__)  # module-specific logger
 
 TESTING: bool = os.getenv("TESTING", "0") == "1"  # added for pytest
-
-# DB_TEXT_FAISS_PATH = "vectorstore/text_faiss"
-# faiss_text_db = FAISS.load_local(
-#     DB_TEXT_FAISS_PATH, HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2"),
-#     allow_dangerous_deserialization=True
-# )
-
-# app = FastAPI()
 
 from bson import ObjectId
 from app.core.database import mongo_db 
@@ -111,8 +86,12 @@ async def lifespan(app: FastAPI):
     # ───── perform existing startup work ─────
     try:
         async with mongo_db() as db:
+            # latest_prompt = db.prompt.find_one(
+            #     {"_id": ObjectId("67b72394f8b916a8d95503f6")}
+            # )
+            # Replace the ObjectId query with a query by name
             latest_prompt = db.prompt.find_one(
-                {"_id": ObjectId("67b72394f8b916a8d95503f6")}
+                {"name": "system_prompt"}
             )
             if latest_prompt:
                 custom_prompt_template = latest_prompt["prompt"]
@@ -156,10 +135,6 @@ app.add_middleware(
 app.include_router(lecture_router)
 app.include_router(before_lecture_router)
 
-# model_dict = llm.llm_models
-# model      = llm.get_selected_llm()   # or model_dict["GPT-4"]
-# selectedModelName =  llm.get_selected_llm_name()
-
 selectedSaveConv = True
 contents = []
 time_list = []
@@ -171,7 +146,6 @@ async def health() -> dict[str, str]:
 
 # Update the structure of lecture_states to include connectrobot
 lecture_states: Dict[str, Dict[str, Dict[str, Dict]]] = {}
-lecture_states = get_lecture_states()
 isSpeak = False
 text = ""
 data_test = {}
@@ -179,182 +153,10 @@ lecture_state_test = {}
 connected_clients = {}
 connected_audio_clients = {}
 local_time_set = {}
-
 robot_id_before = None
 
-@app.websocket("/ws/{lecture_id}/{connectrobot}")
-async def websocket_endpoint(websocket: WebSocket, lecture_id: str, connectrobot: str = None):
-    global isSpeak, text, data_test, robot_id_before
-    await websocket.accept()
-
-    session_id = str(websocket.client)
-
-    robot_backends = {}
-    robot_spoken_text = {}
-    current_state_machine = None
-
-    def update_current_state_machine(value):
-        nonlocal current_state_machine
-        current_state_machine = value
-        logger.debug(f"current_state_machine {current_state_machine}")
-
-    async def process_audio_message(audio_path, model, websocket, robot_id, spoken_text, with_style):
-        try:
-            text_result = await transcribe_audio(audio_path, model)
-            logger.info(f"Transcription complete: {text_result}")
-
-            if with_style:
-                await websocket.send_text(json.dumps({"text": text_result}))
-                await current_state_machine.enter_conversation(websocket, lecture_states, text_result, robot_id)
-            else:
-                full_text = "\n User: " + text_result
-                logger.info(f"Sending to connected clients: {full_text}")
-                logger.info(f"connected_audio_clients: {connected_audio_clients}")
-                for client in connected_audio_clients.get(robot_id, []):
-                    if client != websocket:
-                        await current_state_machine.enter_conversation(client, lecture_states, full_text, robot_id)
-                await websocket.send_text(json.dumps({"text": full_text}))
-
-            if robot_id in lecture_state_test and "last_message_time" in lecture_state_test[robot_id]:
-                lecture_state_test[robot_id]["last_message_time"] = time.time()
-
-            current_state_machine.ev_init()
-
-        except Exception as e:
-            logger.exception("Error in background audio processing task:")
-            await websocket.send_text(json.dumps({"error": "Audio processing failed"}))
-
-    if lecture_id == "before":
-        if lecture_id not in lecture_states:
-            lecture_states[lecture_id] = {"state_machine": LectureStateMachine(lecture_id), "sessions": {}, "running": True}
-
-        state_machine = lecture_states[lecture_id]["state_machine"]
-        update_current_state_machine(state_machine)
-        state_machine.ev_init()
-
-        vision_task = asyncio.create_task(handle_vision_data(current_state_machine, robot_id_before, websocket))
-
-        try:
-            while True:
-                message = await websocket.receive_text()
-                data = json.loads(message)
-
-                if data:
-                    logger.info("Receive data from speech client successfully!")
-
-                if data.get("type") == "ping":
-                    logger.info("websocket is open!")
-                    continue
-
-                if "robot_id" in data:
-                    robot_id_before = data["robot_id"]
-                    if "local_time" in data:
-                        local_time = data["local_time"]
-                        dt = datetime.fromisoformat(local_time)
-                        formatted_time = dt.strftime("%H")
-                        if robot_id_before not in local_time_set:
-                            local_time_set[robot_id_before] = {"local time": formatted_time}
-                        else:
-                            local_time_set[robot_id_before]["local time"] = formatted_time
-                        logger.debug(f"local_time_set {local_time_set}")
-                    if robot_id_before not in connected_clients:
-                        connected_clients[robot_id_before] = []
-                    if "client" in data:
-                        connected_clients[robot_id_before].append(websocket)
-                        logger.info("Added audio client!")
-                    if "style" not in data:
-                        if robot_id_before not in connected_audio_clients:
-                            connected_audio_clients[robot_id_before] = []
-                        if "client" in data:
-                            connected_audio_clients[robot_id_before].append(websocket)
-
-                if "backend" in data:
-                    if robot_id_before:
-                        robot_backends[robot_id_before] = data["backend"]
-
-                if "spoken_text" in data:
-                    if robot_id_before:
-                        robot_spoken_text[robot_id_before] = data["spoken_text"]
-                        text = "Assistant:" + robot_spoken_text[robot_id_before]
-
-                if "audio" in data:
-                    if robot_id_before:
-                        audio_path = f"{robot_id_before}received_audio.wav"
-                        if isinstance(data["audio"], str):
-                            audio_bytes = base64.b64decode(data["audio"])
-                        else:
-                            logger.warning(f"Invalid audio data format: {type(data['audio'])}")
-                            return
-
-                        with wave.open(audio_path, "wb") as wf:
-                            wf.setnchannels(1)
-                            wf.setsampwidth(2)
-                            wf.setframerate(16000)
-                            wf.writeframes(audio_bytes)
-
-                        logger.info(f"Audio saved to {audio_path}")
-
-                        model = robot_backends.get(robot_id_before, "whisper-1")
-                        with_style = "style" in data
-                        spoken = robot_spoken_text.get(robot_id_before, "")
-
-                        asyncio.create_task(process_audio_message(audio_path, model, websocket, robot_id_before, spoken, with_style))
-
-        except WebSocketDisconnect:
-            logger.error("❌ WebSocket disconnected unexpectedly: %s", session_id)
-            if robot_id_before and websocket in connected_clients.get(robot_id_before, []):
-                connected_clients[robot_id_before].remove(websocket)
-                if not connected_clients[robot_id_before]:
-                    del connected_clients[robot_id_before]
-            if robot_id_before and websocket in connected_audio_clients.get(robot_id_before, []):
-                connected_audio_clients[robot_id_before].remove(websocket)
-                if not connected_audio_clients[robot_id_before]:
-                    del connected_audio_clients[robot_id_before]
-            if lecture_id in lecture_states and connectrobot in lecture_states[lecture_id]:
-                lecture_states[lecture_id][connectrobot]["sessions"].pop(session_id, None)
-
-        except KeyError:
-            logger.exception("❌ KeyError - Missing expected key:")
-            await websocket.send_text(json.dumps({"error": "Key error occurred."}))
-        except ValueError:
-            logger.exception("❌ ValueError occurred during processing:")
-            await websocket.send_text(json.dumps({"error": "Value error occurred."}))
-        except Exception as e:
-            logger.exception(f"❌ Unexpected error with {robot_id_before}:")
-            await websocket.send_text(json.dumps({"error": "Internal server error"}))
-            await asyncio.sleep(2)
-        finally:
-            try:
-                if robot_id_before and websocket in connected_clients.get(robot_id_before, []):
-                    connected_clients[robot_id_before].remove(websocket)
-                    if not connected_clients[robot_id_before]:
-                        del connected_clients[robot_id_before]
-                if robot_id_before and websocket in connected_audio_clients.get(robot_id_before, []):
-                    connected_audio_clients[robot_id_before].remove(websocket)
-                    if not connected_audio_clients[robot_id_before]:
-                        del connected_audio_clients[robot_id_before]
-
-                vision_task.cancel()
-                try:
-                    await vision_task
-                except asyncio.CancelledError:
-                    logger.info("Vision task cancelled cleanly.")
-
-                # Cancel background tasks if stored in a list
-                for task in getattr(websocket, "background_tasks", []):
-                    task.cancel()
-                    try:
-                        await task
-                    except asyncio.CancelledError:
-                        logger.info("Background task cancelled cleanly.")
-            except Exception as cleanup_error:
-                logger.exception("Error during WebSocket cleanup: %s", cleanup_error)
-
-
-    else:
-        await lecture_websocket_endpoint(websocket, lecture_id, connectrobot)
-
-def convert_audio_to_bytes(audio_path):
+def convert_audio_to_bytes(robot_id):
+    audio_path = f"{robot_id}received_audio.wav"
     try:
         with open(audio_path, "rb") as audio_file:
             audio_bytes = audio_file.read()
@@ -363,7 +165,8 @@ def convert_audio_to_bytes(audio_path):
         logger.exception("❌ Error reading audio file:")
         return None
 
-def save_audio_to_file(audio_path, audio_bytes):
+def save_audio_to_file(audio_bytes, robot_id):
+    audio_path = f"{robot_id}received_audio.wav"
     with wave.open(audio_path, "wb") as wf:
         wf.setnchannels(1)
         wf.setsampwidth(2)
@@ -397,30 +200,41 @@ async def selectModel(modelName: str = Form(...)):
     selectedModelName = modelName
     return {"selected_model": modelName}
 
-@app.post("/saveConv/")
-async def saveConv(saveConv: str = Form(...)):
+@app.post("/saveConv/{robot_id}")
+async def saveConv(robot_id: str, saveConv: str = Form(...)):
     global selectedSaveConv
     selectedSaveConv = saveConv
+    set_saveConv(robot_id, saveConv)
     logger.info(f"save_conversation: {selectedSaveConv}")
 
-@app.post("/selectLanguage/{lecture_id}")
-async def selectLanguage(lecture_id: str, languageName: str = Form(...)):
-    # Ensure that lecture state exists for the given lecture_id
-    if lecture_id not in lecture_states:
-        lecture_states[lecture_id] = { "state_machine": LectureStateMachine(lecture_id), "selectedLanguageName": languageName, "sessions": {}}
+@app.post("/selectLanguage/{lecture_id}/{robot_id}")
+async def selectLanguage(lecture_id: str, robot_id: str, languageName: str = Form(...)):
+    language_selected = get_language_selected()
+    # Ensure that the lecture_id exists in language_selected
+    if lecture_id not in language_selected:
+        language_selected[lecture_id] = {}  # Initialize the dictionary for the lecture_id
+    
+    # Ensure that the robot_id exists in the nested dictionary
+    if robot_id not in language_selected[lecture_id]:
+        language_selected[lecture_id][robot_id] = {
+            "selectedLanguageName": languageName
+        }
     else:
-        lecture_states[lecture_id]["selectedLanguageName"] = languageName
+        # Update the selected language if the robot_id already exists
+        language_selected[lecture_id][robot_id]["selectedLanguageName"] = languageName
 
-    # logger.info(f"Selected Language for {lecture_id}: {languageName}")
+    logger.info(f"Selected Language for {lecture_id}: {languageName}")
+    set_language_selected(language_selected)
     return {"message": "Language updated successfully", "selectedLanguageName": languageName}
 
-@app.post("/changeLanguage/{lecture_id}")
-async def change_language(lecture_id: str, languageName: str = Form(...)):
+@app.post("/changeLanguage/{lecture_id}/{robot_id}")
+async def change_language(lecture_id: str, robot_id: str, languageName: str = Form(...)):
+    lecture_states = get_lecture_states()
     if lecture_id not in lecture_states:
         return {"message": "Lecture not started yet."}
     # Update the language for all active sessions
-    for session_id in lecture_states[lecture_id]["sessions"]:
-        lecture_states[lecture_id]["sessions"][session_id]["selectedLanguageName"] = languageName
+    for session_id in lecture_states[lecture_id][robot_id]["sessions"]:
+        lecture_states[lecture_id][robot_id]["sessions"][session_id]["selectedLanguageName"] = languageName
 
     # logger.info(f"Language for lecture {lecture_id} changed to {languageName}")
     return {"message": "Language updated successfully", "selectedLanguageName": languageName}
@@ -455,193 +269,6 @@ def sanitize_text(text: str) -> str:
 
 # Global variable to store selected users as pairs of (robot_id, selected_user)
 stored_users = []
-
-async def handle_user_message(
-        websocket: WebSocket, 
-        lecture_state: Dict, 
-        message, 
-        robot_id,
-        db=Depends(get_db)):
-    """Processes user message and sends response if WebSocket is open."""
-
-    global stored_users  # Declare the global variable to modify it
-
-    # Fetch the selected user
-    selected_user = get_selected_student(robot_id)
-    logger.info(f"selected_user: {selected_user}")
-
-    # Check if the robot_id exists in stored_users
-    existing_user = next((user for user in stored_users if user[0] == robot_id), None)
-
-    logger.info("Start handle_user_message function successfully!")
-
-    # user_message = json.loads(message).get("text")
-    # user_name = json.loads(message).get("username")
-    # total_count = json.loads(message).get("totalCount")
-    # handsup_count = json.loads(message).get("handsUpCount")
-
-    # user_data = db.users.find_one({"name": user_name})
-    
-    # overview = user_data.get("overview") if user_data else None
-
-    logger.info("Start handle_user_message function successfully!")
-
-    if message == "robot_text":
-        result = "If you have any question, feel free to ask!"
-        
-        selectedLanguageName = lecture_state.get("selectedLanguageName", "English") or "English"
-        session_id = str(websocket.client)
-        #tts
-        audio_stream = generate_audio_stream(result, selectedLanguageName)
-        audio_length = get_audio_length(audio_stream)
-        audio_stream.seek(0)
-        audio_base64 = base64.b64encode(audio_stream.read()).decode("utf-8")
-
-        # await websocket.send_text({"text": result, "audio": audio_base64, "type": "model"})
-        
-        data = {
-            "robot_id":robot_id,
-            "text": result,
-            "audio": audio_base64,
-            "type": "model"
-        }
-
-        logger.info(f"Data to be sent to audio client: robot_id: {robot_id}, text: {result}, type: model")
-
-        # Convert the dictionary to a JSON string
-        json_data = json.dumps(data)
-
-        # send to audio client
-        await websocket.send_text(json_data)
-        return audio_length
-
-    if lecture_state:
-        lecture_state["last_message_time"] = time.time()
-
-    selectedLanguageName = lecture_state.get("selectedLanguageName", "English") or "English"
-    session_id = str(websocket.client)
-
-    history = chat_histories.get(session_id, [])
-    history = [sanitize_text(h) for h in history]
-
-    retrieved_docs = faiss_text_db.similarity_search(message, k=5)
-    retrieved_texts = "\n".join(sanitize_text(doc.page_content) for doc in retrieved_docs) if retrieved_docs else "No relevant context found."
-
-    logger.info("History for Formatted Prompt: %s", history)
-    logger.info("User Query for Formatted Prompt: %s", message)
-    greeting_msg = "Hello"
-    hour = local_time_set[robot_id]
-
-    # Create a prompt for OpenAI to generate a greeting
-    prompt = f"Generate a greeting message based on the current hour {hour}. Instead of 'Hello', make exact greeting based on current hour. And don't tell me about the exact time. Make this reply with one sentence. For example, 'Good morning', 'Good afternoon', 'Good evening' or 'Good night'"
-
-    # Call OpenAI API to generate the greeting Chendra
-    greeting_msg =  await predict(prompt)
-
-    formatted_prompt = build_chat_prompt(
-        custom_template=custom_prompt_template,
-        history=history,                 # pass the list, not the joined string
-        query=message,
-        context=retrieved_texts,
-        language="",
-        username="",
-        total_count="25",
-        hands_up_count="5",
-        overview="",
-        greeting_msg = greeting_msg,
-        )
-    if formatted_prompt:
-        logger.info("Prompty for LLM is ready successfully!")
-    else:
-        logger.error("Prompty for LLM is not ready.")
-    #llm
-  
-    result = await predict(formatted_prompt)
-
-    if result:
-        logger.info("Result is generated successfully!")
-    else:
-        logger.error("Result is not generated.")
-    #tts
-    audio_stream = generate_audio_stream(result, selectedLanguageName)
-    audio_length = get_audio_length(audio_stream)
-    audio_stream.seek(0)
-    audio_base64 = base64.b64encode(audio_stream.read()).decode("utf-8")
-
-    # await websocket.send_text({"text": result, "audio": audio_base64, "type": "model"})
-    
-    data = {
-        "robot_id":robot_id,
-        "text": result,
-        "audio": audio_base64,
-        "type": "model"
-    }
-
-    logger.info(f"Data to be sent to audio client: robot_id: {robot_id}, text: {result}, type: model")
-
-    # Convert the dictionary to a JSON string
-    json_data = json.dumps(data)
-
-    # send to audio client
-    await websocket.send_text(json_data)
-
-    quesAndAnswer = {
-        "question": message,
-        "answer": result,
-        "model": selectedModelName,
-        "prompt": custom_prompt_template
-    }
-
-    try:
-        qna_document = QnA(**quesAndAnswer)
-        logger.info(f"save_conversation: {selectedSaveConv}")
-        if selectedSaveConv == "save":
-            db.qna.insert_one(qna_document.dict(exclude_unset=True))
-            logger.info("QnA successfully inserted into the database successfully!")
-        if selectedSaveConv == "unsave":
-            logger.info("QnA is not inserted into the database!")
-    except Exception as e:
-        logger.error(f"Error inserting QnA into database: {e}")
-
-    if lecture_state:
-        lecture_state["last_message_time"] = time.time()
-
-    # history.append(f"User: {message}")
-    # history.append(f"Assistant: {result}")
-
-    # if len(history) > MAX_HISTORY_LENGTH * 2:
-    #     history = history[-MAX_HISTORY_LENGTH * 2:]
-    
-    # chat_histories[session_id] = history
-    
-    is_new_user = existing_user is None
-    is_changed_user = not is_new_user and selected_user != existing_user[1]
-
-    if is_new_user:
-        stored_users.append((robot_id, selected_user))
-        logger.info("---------------------Initial selected_user stored.")
-    elif is_changed_user:
-        stored_users = [(robot_id, selected_user) if user[0] == robot_id else user for user in stored_users]
-        logger.info("---------------------Changed")
-    else:
-        logger.info("---------------------Same")
-
-    # Prepare or update chat history
-    if is_new_user or is_changed_user:
-        history = []
-    else:
-        history = chat_histories.get(session_id, [])
-
-    history.append(f"User: {message}")
-    history.append(f"Assistant: {result}")
-
-    # Trim history if needed
-    if len(history) > MAX_HISTORY_LENGTH * 2:
-        history = history[-MAX_HISTORY_LENGTH * 2:]
-
-    chat_histories[session_id] = history
-
-    return audio_length
 
 async def generate_and_send_ai_response(
         websocket: WebSocket, 
@@ -914,7 +541,7 @@ async def addTopic(lecture_id: str = Form(...), title: str = Form(...), qna_time
         "content": []  # Empty list for content
     }
 
-    # Insert into MongoDB
+    # Insert into 
     result = db.topics.insert_one(topic_data)
     if not result.inserted_id:
         raise HTTPException(status_code=500, detail="Failed to insert topic")
