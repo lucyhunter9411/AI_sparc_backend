@@ -362,7 +362,7 @@ class LectureStateMachine:
         extract_image = data.get("image")
         lesson_image = 'images/' + extract_image
         
-        await send_image_to_devices("robot_1", db, lesson_image, logger)
+        await send_image_to_devices(connectrobot, db, lesson_image, logger)
 
         if is_websocket_alive:
             await websocket.send_text(json.dumps({"text": data.get(f"{selectedLanguageName}Text"), "type": "static","image":data.get("image")}))

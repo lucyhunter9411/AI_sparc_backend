@@ -35,6 +35,10 @@ from app.vector_db.vectorDB_generation_update import process_pdf_and_create_or_u
 from app.utils.rooms import get_rooms
 from app.utils.TV_app import sign_in
 
+import subprocess
+import sys
+from azure.storage.blob import BlobServiceClient
+
 # --- add just above the FastAPI() call --------------
 from contextlib import asynccontextmanager
 from langchain_community.vectorstores import FAISS
@@ -69,7 +73,13 @@ DB_TEXT_FAISS_PATH = "app/vector_db/vectorstore/text_faiss"
 EMBEDDING_MODEL    = "sentence-transformers/all-MiniLM-L6-v2"
 faiss_text_db = None      # will be initialised once in lifespan
 
+# Azure Blob config
+AZURE_CONNECTION_STRING = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
+BLOB_CONTAINER_NAME = "pdf-images"
 
+# Initialize Azure Blob client
+blob_service_client = BlobServiceClient.from_connection_string(AZURE_CONNECTION_STRING)
+container_client = blob_service_client.get_container_client(BLOB_CONTAINER_NAME)
 
 manager = ConnectionManager() 
 
@@ -661,35 +671,93 @@ UPLOAD_FOLDER_FAISS = os.getenv("UPLOAD_FOLDER_FAISS", "uploads")
 IMAGE_DIR = os.getenv("IMAGE_DIR", "app/vector_db/images")
 os.makedirs(UPLOAD_FOLDER_FAISS, exist_ok=True)
 
+# @app.post("/create-vector-db/v0/")
+# async def create_vector_db_v0_endpoint(file_name: str = Form(...)):
+#     try:
+#         file_location = os.path.join(UPLOAD_FOLDER_FAISS, file_name)
+#         create_vector_db(file_location)
+#         return {"status": "Vector DB created successfully"}
+#     except Exception as e:
+#         raise HTTPException(status_code=500, detail=str(e))
+        
 @app.post("/create-vector-db/v0/")
 async def create_vector_db_v0_endpoint(file_name: str = Form(...)):
     try:
         file_location = os.path.join(UPLOAD_FOLDER_FAISS, file_name)
-        create_vector_db(file_location)
-        return {"status": "Vector DB created successfully"}
+
+        # Run with the current Python interpreter path
+        subprocess.Popen([sys.executable, "app/vector_db/vectorDB_generation_ini.py", file_location])
+
+        return {
+            "status": "processing",
+            "message": f"Embedding for '{file_name}' has started in background."
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
         
+# @app.post("/create-vector-db/v1/")
+# async def create_vector_db_v1_endpoint(file_name: str = Form(...)):
+#     try:
+#         file_location = os.path.join(UPLOAD_FOLDER_FAISS, file_name)
+#         process_pdf_and_create_or_update_vector_db(file_location)
+#         return {"status": "Vector DB created successfully"}
+#     except Exception as e:
+#         raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/create-vector-db/v1/")
 async def create_vector_db_v1_endpoint(file_name: str = Form(...)):
     try:
         file_location = os.path.join(UPLOAD_FOLDER_FAISS, file_name)
-        process_pdf_and_create_or_update_vector_db(file_location)
-        return {"status": "Vector DB created successfully"}
+
+        # Run with the current Python interpreter path
+        subprocess.Popen([sys.executable, "app/vector_db/vectorDB_generation_update.py", file_location])
+
+        return {
+            "status": "processing",
+            "message": f"Embedding for '{file_name}' has started in background."
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+# @app.post("/upload/file/")
+# async def upload_file(file: UploadFile = File(...)):
+#     # Log the file received
+#     if file is None:
+#         raise HTTPException(status_code=422, detail="No file provided.")
+    
+#     try:
+#         file_location = os.path.join(UPLOAD_FOLDER_FAISS, file.filename)
+#         with open(file_location, "wb") as f:
+#             f.write(await file.read())
+#         return JSONResponse(status_code=200, content={"message": "File uploaded successfully!", "file_name": file.filename})
+#     except Exception as e:
+#         return JSONResponse(status_code=500, content={"message": f"File upload failed: {str(e)}"})
+
 @app.post("/upload/file/")
 async def upload_file(file: UploadFile = File(...)):
-    # Log the file received
     if file is None:
         raise HTTPException(status_code=422, detail="No file provided.")
-    
+
     try:
-        file_location = os.path.join(UPLOAD_FOLDER_FAISS, file.filename)
-        with open(file_location, "wb") as f:
-            f.write(await file.read())
-        return JSONResponse(status_code=200, content={"message": "File uploaded successfully!", "file_name": file.filename})
+        # Read file bytes
+        contents = await file.read()
+        blob_name = file.filename
+
+        # Upload to Azure Blob Storage
+        container_client.upload_blob(name=blob_name, data=contents, overwrite=True)
+
+        # Construct public blob URL
+        blob_url = f"https://{blob_service_client.account_name}.blob.core.windows.net/{BLOB_CONTAINER_NAME}/{blob_name}"
+
+        return JSONResponse(
+            status_code=200,
+            content={
+                "message": "File uploaded successfully!",
+                "file_name": file.filename,
+                "blob_url": blob_url
+            }
+        )
     except Exception as e:
         return JSONResponse(status_code=500, content={"message": f"File upload failed: {str(e)}"})
 
