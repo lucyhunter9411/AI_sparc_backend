@@ -31,7 +31,6 @@ topics = []
 
 @router.post("/startLecture/{lecture_id}/{topic_id}")
 async def start_lecture(lecture_id: str, topic_id: str, connectrobot: str = Form(...), db=Depends(get_db)):
-    print("@@@@@@@@@@@@@@@@@@@@@@@@@", connectrobot)
     global topics, contents, time_list
     topics = list(db.topics.find({"lecture_id": lecture_id}).sort("_id", 1))
 
@@ -112,8 +111,7 @@ async def websocket_lesson_audio(websocket: WebSocket, robot_id: str):
 
 # WebSocket endpoint for lecture
 @router.websocket("/ws/{lecture_id}/{connectrobot}")
-async def lecture_websocket_endpoint(websocket: WebSocket, lecture_id: str, connectrobot: str):
-    print("------------------", connectrobot)
+async def lecture_websocket_endpoint(websocket: WebSocket, lecture_id: str, connectrobot: str, db=Depends(get_db)):
     global current_state_machine, robot_id_before
     await websocket.accept()
     lecture_states = get_lecture_states()
@@ -167,7 +165,7 @@ async def lecture_websocket_endpoint(websocket: WebSocket, lecture_id: str, conn
                 state_machine.ev_to_conducting()
             else:
                 data_to_audio[connectrobot]["data"] = data_frontend
-                await state_machine.enter_content(data_frontend, lecture_to_audio[connectrobot], websocket, connectrobot)
+                await state_machine.enter_content(data_frontend, lecture_to_audio[connectrobot], websocket, connectrobot, db)
 
         if not lecture_to_audio[connectrobot]["is_active"]:
             state_machine.ev_init()

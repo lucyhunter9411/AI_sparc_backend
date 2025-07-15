@@ -7,7 +7,6 @@ from fastapi import FastAPI, HTTPException, Form, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse
-from langchain_community.vectorstores import FAISS
 from langchain.chat_models import AzureChatOpenAI
 from langchain.prompts import PromptTemplate
 from langchain_community.embeddings import HuggingFaceEmbeddings
@@ -24,7 +23,6 @@ from bson import ObjectId
 import wave
 from bson import ObjectId
 from app.api.deps import get_db
-from app.api.deps import get_db
 from app.utils.audio import generate_audio_stream
 import app.services.llm as llm
 from app.services.vision_service import  get_data
@@ -32,11 +30,18 @@ from app.services.shared_data import get_lecture_states, set_language_selected, 
 from app.websockets.connection_manager import ConnectionManager
 from app.websockets.lecture import router as lecture_router
 from app.websockets.before_lecture import router as before_lecture_router
+from app.vector_db.vectorDB_generation_ini import create_vector_db  
+from app.vector_db.vectorDB_generation_update import process_pdf_and_create_or_update_vector_db
+from app.utils.rooms import get_rooms
+from app.utils.TV_app import sign_in
 
 # --- add just above the FastAPI() call --------------
 from contextlib import asynccontextmanager
 from langchain_community.vectorstores import FAISS
 from langchain_community.embeddings import HuggingFaceEmbeddings
+import asyncio
+from PIL import Image
+from Schema import DeviceList  # Add this import statement
 
 
 from app.services.llm_service import (
@@ -60,7 +65,7 @@ from app.core.database import mongo_db
 # make sure this is at module scope, before your @app.on_event
 custom_prompt_template = ""
 
-DB_TEXT_FAISS_PATH = "vectorstore/text_faiss"
+DB_TEXT_FAISS_PATH = "app/vector_db/vectorstore/text_faiss"
 EMBEDDING_MODEL    = "sentence-transformers/all-MiniLM-L6-v2"
 faiss_text_db = None      # will be initialised once in lifespan
 
@@ -86,10 +91,6 @@ async def lifespan(app: FastAPI):
     # ───── perform existing startup work ─────
     try:
         async with mongo_db() as db:
-            # latest_prompt = db.prompt.find_one(
-            #     {"_id": ObjectId("67b72394f8b916a8d95503f6")}
-            # )
-            # Replace the ObjectId query with a query by name
             latest_prompt = db.prompt.find_one(
                 {"name": "system_prompt"}
             )
@@ -105,6 +106,10 @@ async def lifespan(app: FastAPI):
             allow_dangerous_deserialization=True,
         )
         logger.info("✅ FAISS text index ready (%s).", DB_TEXT_FAISS_PATH)
+        if faiss_text_db is None:
+                logger.error("❌ FAISS text index is None after loading.")
+        else:
+            logger.info("✅ FAISS text index successfully loaded.")
 
     except Exception:
         logger.exception("❌ Error during startup lifespan")
@@ -121,12 +126,17 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
+# Get settings for CORS configuration
+settings = get_settings()
+
+# Build CORS origins list
+allow_origins = ["http://localhost:3000"]
+if settings.frontend_url:
+    allow_origins.append(settings.frontend_url)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "https://app-ragfrontend-dev-wus-001.azurewebsites.net"
-    ],
+    allow_origins=allow_origins,
     allow_credentials=True,
     allow_methods=["*"],  # Allows all HTTP methods (GET, POST, etc.)
     allow_headers=["*"],  # Allows all headers
@@ -646,6 +656,133 @@ async def deleteLecture(lectureID: str = Form(...), db=Depends(get_db)):
         lecture["_id"] = str(lecture["_id"])
     return {"lecture": allLectures}
 
+# Define the absolute path for uploads
+UPLOAD_FOLDER_FAISS = os.getenv("UPLOAD_FOLDER_FAISS", "uploads")
+IMAGE_DIR = os.getenv("IMAGE_DIR", "app/vector_db/images")
+os.makedirs(UPLOAD_FOLDER_FAISS, exist_ok=True)
+
+@app.post("/create-vector-db/v0/")
+async def create_vector_db_v0_endpoint(file_name: str = Form(...)):
+    try:
+        file_location = os.path.join(UPLOAD_FOLDER_FAISS, file_name)
+        create_vector_db(file_location)
+        return {"status": "Vector DB created successfully"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+        
+@app.post("/create-vector-db/v1/")
+async def create_vector_db_v1_endpoint(file_name: str = Form(...)):
+    try:
+        file_location = os.path.join(UPLOAD_FOLDER_FAISS, file_name)
+        process_pdf_and_create_or_update_vector_db(file_location)
+        return {"status": "Vector DB created successfully"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/upload/file/")
+async def upload_file(file: UploadFile = File(...)):
+    # Log the file received
+    if file is None:
+        raise HTTPException(status_code=422, detail="No file provided.")
+    
+    try:
+        file_location = os.path.join(UPLOAD_FOLDER_FAISS, file.filename)
+        with open(file_location, "wb") as f:
+            f.write(await file.read())
+        return JSONResponse(status_code=200, content={"message": "File uploaded successfully!", "file_name": file.filename})
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"message": f"File upload failed: {str(e)}"})
+
+@app.post("/add_or_update/room/")
+async def add_or_update_room(
+    robot_id: str = Form(...),
+    device_id: str = Form(...),
+    room_name: str = Form(...),
+    db=Depends(get_db)
+):
+    # Create a new DeviceList object
+    new_device = DeviceList(robot_id=robot_id, device_id=device_id, room_name=room_name)
+
+    try:
+        # Check if the robot_id already exists in the database
+        existing_entry = db.devices.find_one({"robot_id": robot_id})
+
+        if existing_entry:
+            # Check if the device_id already exists in the device list
+            device_exists = any(device['device_id'] == device_id for device in existing_entry['device'])
+
+            if device_exists:
+                # Update the device name if the device_id exists
+                db.devices.update_one(
+                    {"robot_id": robot_id, "device.device_id": device_id},
+                    {"$set": {"device.$.room_name": room_name}}
+                )
+                return {"message": "Device name updated for existing device_id"}
+            else:
+                # Append the new device to the existing list if device_id does not exist
+                db.devices.update_one(
+                    {"robot_id": robot_id},
+                    {"$push": {"device": new_device.dict(by_alias=True)}}
+                )
+                return {"message": "Device added to existing robot_id"}
+        else:
+            # If robot_id does not exist, create a new entry
+            new_entry = {
+                "robot_id": robot_id,
+                "device": [new_device.dict(by_alias=True)]
+            }
+            db.devices.insert_one(new_entry)
+            return {"message": "New robot_id created and device added"}
+
+    except Exception as e:
+        logger.error(f"Error adding device: {e}")
+        raise HTTPException(status_code=500, detail="Failed to add device")
+    
+@app.delete("/delete/room/")
+async def delete_room(
+    robot_id: str = Form(...),
+    device_id: str = Form(...),
+    room_name: str = Form(...),
+    db=Depends(get_db)
+):
+    try:
+        # Check if the robot_id and device_id exist in the database
+        existing_entry = db.devices.find_one({"robot_id": robot_id, "device.device_id": device_id})
+
+        if existing_entry:
+            # Check if the room_name matches
+            device_matches = any(device['device_id'] == device_id and device['room_name'] == room_name for device in existing_entry['device'])
+
+            if device_matches:
+                # Remove the device from the list
+                db.devices.update_one(
+                    {"robot_id": robot_id},
+                    {"$pull": {"device": {"device_id": device_id, "room_name": room_name}}}
+                )
+                return {"message": "Device deleted successfully"}
+            else:
+                return {"message": "Device name does not match"}
+        else:
+            return {"message": "Device not found"}
+
+    except Exception as e:
+        logger.error(f"Error deleting device: {e}")
+        raise HTTPException(status_code=500, detail="Failed to delete device")
+    
+@app.get("/get/rooms/")
+async def get_rooms_endpoint(robot_id: str = Form(...), db=Depends(get_db)):
+    return await get_rooms(robot_id, db)
+
+@app.post("/send_request/login/")
+async def handle_login_request(username: str = Form(...), password: str = Form(...)):
+    try:
+        auth_response = sign_in(username, password)
+        access_token = auth_response.get("access_token")
+        # set_access_token(access_token)
+        return {"message": "Login successful", "data": auth_response}
+    except HTTPException as e:
+        return {"message": "Login failed", "detail": str(e)}
+
 method = "Whisper"
 @app.post("/sttMethod/")
 async def sttMethod(sttMethod: str = Form(...)):    
@@ -653,6 +790,9 @@ async def sttMethod(sttMethod: str = Form(...)):
     method = sttMethod
 
 app.mount("/static", StaticFiles(directory="static"), name="static") 
+# Mount the directory that contains the images
+app.mount("/images", StaticFiles(directory=IMAGE_DIR), name="images")
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)

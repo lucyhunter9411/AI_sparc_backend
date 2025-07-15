@@ -6,7 +6,7 @@ from langchain_community.embeddings import HuggingFaceEmbeddings
 from app.core.config import get_settings
 
 settings = get_settings()
-DB_TEXT_FAISS_PATH = "vectorstore/text_faiss"
+DB_TEXT_FAISS_PATH = "app/vector_db/vectorstore/text_faiss"
 EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 
 @asynccontextmanager    

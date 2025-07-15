@@ -37,9 +37,11 @@ async def save_audio_to_file(audio_bytes, robot_id):
 async def pipeline(robot_id: str, msg, audio_source) -> dict:
     """
     Full STT → LLM → TTS pipeline for one 'speech' clip.
-    Returns a dictionary containing the processed data.
     """
+
     # 1. decode wav clip to a temp file
+    # b64_clip: str = msg.data["audio"]
+    # pcm_bytes = base64.b64decode(b64_clip)
     audio_data = msg.data["audio"]  # Get raw audio (no base64 decoding)
     pcm_bytes = bytes(audio_data)  # Convert list of integers back to bytes
     save_state = get_saveConv(robot_id)
@@ -70,12 +72,11 @@ async def pipeline(robot_id: str, msg, audio_source) -> dict:
     # Retrieve supporting context from FAISS
     retrieved_docs = main.faiss_text_db.similarity_search(user_text, k=5)
     if retrieved_docs:
-        log.info("FAISS match found:", retrieved_docs)
+        log.info("FAISS match found")
     retrieved_texts = (
         "\n".join(sanitize_text(doc.page_content) for doc in retrieved_docs)
         if retrieved_docs else "No relevant context found."
     )
-    log.info("retrieved_texts:", retrieved_texts)
 
     # build prompt
     prompt = build_prompt(
@@ -87,6 +88,10 @@ async def pipeline(robot_id: str, msg, audio_source) -> dict:
 
     # LLM prediction
     assistant_text = await llm_predict(prompt)
+
+    # # Create a task to run image_retrieve_based_answer independently
+    # asyncio.create_task(asyncio.to_thread(retrieve_image, user_text, assistant_text, robot_id, top_k=1))
+
     history.append(assistant_text)
     log.info("🤖 LLM response received")
 

@@ -1,0 +1,16 @@
+{
+    "name": "chat",
+    "template": "{{ custom_template }}\n\nContext:\n{{ context }}\n\nConversation History:\n{{ history }}\n\nUser Query: {{ query }}\n\nLanguage: {{ language }}\nUsername: {{ username }}\nTotal Students: {{ totalCount }}\nHands Up: {{ handsUpCount }}\nOverview: {{ overview }}\nGreeting: {{ greeting_msg }}",
+    "variables": {
+        "custom_template": "",
+        "context": "",
+        "history": [],
+        "query": "",
+        "language": "",
+        "username": "",
+        "totalCount": "25",
+        "handsUpCount": "5",
+        "overview": "",
+        "greeting_msg": ""
+    }
+}

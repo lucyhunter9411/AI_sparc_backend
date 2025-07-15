@@ -18,6 +18,9 @@ variables:
   # Stage App Settings
   stageWebAppName: 'api-ragbackend-stg-wus-001'
 
+  # Prod App Settings
+  ProdWebAppName: 'api-ragbackend-prod-wus2-001'
+
   # Agent VM image name
   vmImageName: 'ubuntu-latest'
 
@@ -157,3 +160,43 @@ stages:
               azureSubscription: '$(azureServiceConnectionId)'
               Action: 'Start Azure App Service'
               WebAppName: '$(stageWebAppName)'
+
+- stage: Deploy_Prod
+  displayName: 'Deploy to Prod'
+  dependsOn: Deploy_Stage
+  condition: and(succeeded(), startsWith(variables['build.sourceBranch'], 'refs/heads/release'))
+  jobs:
+  - deployment: DeployDev
+    displayName: 'Deploy to Backend API - Prod'
+    environment:
+      name: ragmodel_prod
+    strategy:
+     runOnce:
+        deploy:
+          steps:
+
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: '$(pythonVersion)'
+            displayName: 'Use Python version'
+
+          - task: AzureAppServiceManage@0
+            inputs:
+              azureSubscription: '$(azureServiceConnectionId)'
+              Action: 'Stop Azure App Service'
+              WebAppName: '$(ProdWebAppName)'
+
+          - task: AzureWebApp@1
+            displayName: 'Deploy Azure Web App : api-ragbackend-prod-wus2-001'
+            inputs:
+              azureSubscription: '$(azureServiceConnectionId)'
+              appType: 'webAppLinux'
+              appName: '$(ProdWebAppName)'
+              package: '$(Pipeline.Workspace)/drop/$(Build.BuildId).zip'
+              startUpCommand: 'pip install --no-cache-dir -r requirements.txt && pip list && gunicorn -w 2 -k uvicorn.workers.UvicornWorker -b 0.0.0.0:8000 main:app'
+
+          - task: AzureAppServiceManage@0
+            inputs:
+              azureSubscription: '$(azureServiceConnectionId)'
+              Action: 'Start Azure App Service'
+              WebAppName: '$(ProdWebAppName)'

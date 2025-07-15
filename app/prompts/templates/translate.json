@@ -1,0 +1,7 @@
+{
+    "name": "translate",
+    "template": "Please translate the following text into {{ target_language }} language.\nI don't need any statements, explanations, pronunciations and approaches.\nPlease give me translated result.\n\nText: {{ text }}",
+    "variables": {
+        "target_language": "Hindi"
+    }
+}

@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     mongo_user:     str = Field(..., env="MONGO_USER")
     mongo_password: str = Field(..., env="MONGO_PASSWORD")
     mongo_db:       str = Field(..., env="DB_NAME")
+    mongo_host:     str = Field("cosmon-sparc-dev-wus-001.global.mongocluster.cosmos.azure.com", env="MONGO_HOST")
 
     # ───────────────────── Azure / OpenAI ────────────────────
     azure_openai_key:     str | None = Field(None, env="AZURE_OPENAI_KEY")
@@ -33,6 +34,9 @@ class Settings(BaseSettings):
     # ───────────────────────── Speech ─────────────────────────
     tts_subscription_key: str | None = Field(None, env="SUBSCRIPTION_KEY")
     tts_region:           str | None = Field(None, env="REGION")
+
+    # ───────────────────────── Frontend ────────────────────────
+    frontend_url:         str | None = Field(None, env="FRONTEND_URL")
 
     # ───────────────────────── Misc ───────────────────────────
     project_root:    Path = Path(__file__).resolve().parents[2]
@@ -59,17 +63,16 @@ def get_settings() -> Settings:
         "mongo_user":     os.getenv("MONGO_USER"),
         "mongo_password": os.getenv("MONGO_PASSWORD"),
         "mongo_db":       os.getenv("DB_NAME"),
-
+        # 'mongo_host' intentionally omitted to allow default fallback
         "azure_openai_key":     os.getenv("AZURE_OPENAI_KEY"),
         "azure_openai_base":    os.getenv("AZURE_OPENAI_BASE"),
         "azure_openai_version": os.getenv("AZURE_OPENAI_VERSION"),
         "azure_deploy_41mini":  os.getenv("AZURE_OPENAI_DEPLOYMENT_41_Mini"),
         "azure_deploy_4":       os.getenv("AZURE_OPENAI_DEPLOYMENT_4"),
         "azure_deploy_35":      os.getenv("AZURE_OPENAI_DEPLOYMENT_35_Turbo"),
-
         "tts_subscription_key": os.getenv("SUBSCRIPTION_KEY"),
         "tts_region":           os.getenv("REGION"),
-
+        "frontend_url":         os.getenv("FRONTEND_URL"),
         "testing":              os.getenv("TESTING", "0") == "1",
     }
     return Settings.model_validate(data)

@@ -21,6 +21,7 @@ session_id_set = []
 connected_audio_clients = []
 saveConv = []
 audio_source = []
+closest_image_path = []
 
 def set_contents(value):
     global contents
@@ -173,3 +174,19 @@ def get_audio_source(robot_id):
         if robot_id in entry:
             return entry[robot_id]
     return []
+
+def set_closest_image_path(robot_id, value):
+    global closest_image_path
+    # Check if the robot_id already exists in the list
+    for entry in closest_image_path:
+        if robot_id in entry:
+            entry[robot_id] = value  # Update existing entry
+            return
+    # If not found, append a new dictionary
+    closest_image_path.append({robot_id: value})
+
+def get_closest_image_path(connectrobot):
+    for entry in closest_image_path:
+        if connectrobot in entry:
+            return entry[connectrobot]  # Return the count for the robot_id
+    return None

@@ -2,15 +2,18 @@
 Prompt-builder helpers for LLM calls.
 """
 from __future__ import annotations
-from langchain.prompts import PromptTemplate
 from functools import lru_cache
 from typing import Any
 from app.services import llm as _raw    # existing module with llm_models etc.
+from app.prompts import PromptManager
 import requests
 import os 
 import httpx, asyncio
 
 OPENAI_API_KEY = os.getenv("OPENAI_KEY", "")
+
+# Initialize prompt manager
+prompt_manager = PromptManager()
 
 # We keep the signature minimal – later we can evolve it.
 def build_chat_prompt(
@@ -29,22 +32,9 @@ def build_chat_prompt(
     """
     Render the final prompt string used for the LLM completion.
     """
-    tmpl = PromptTemplate(
-        input_variables=[
-            "history",
-            "query",
-            "context",
-            "language",
-            "username",
-            "totalCount",
-            "handsUpCount",
-            "overview",
-            "greeting_msg",
-        ],
-        template=custom_template,
-    )
-    
-    return tmpl.format(
+    return prompt_manager.render(
+        "chat",
+        custom_template=custom_template,
         history="\n".join(history),
         query=query,
         context=context,
