@@ -27,4 +27,3 @@ numpy
 torch
 Pillow
 pymupdf
-azure-storage-blob

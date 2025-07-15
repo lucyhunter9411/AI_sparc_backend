@@ -31,7 +31,6 @@ from app.services.shared_data import get_contents, get_time_list, get_hand_raisi
 from app.services.vision_service import  handle_vision_data
 from app.websockets.connection_manager import ConnectionManager
 from app.api.deps import get_conn_mgr
-from app.websockets.send_image_to_devices import send_image_to_devices
 
 logger = logging.getLogger(__name__)
 
@@ -327,15 +326,7 @@ class LectureStateMachine:
     def on_start_lecture(self):
         logger.info("Lecture started!!!!!!!")
 
-    async def enter_content(
-        self, 
-        data, 
-        lecture_state, 
-        websocket,
-        connectrobot, 
-        db,
-        mgr: ConnectionManager = Depends(get_conn_mgr),
-    ) -> None:
+    async def enter_content(self, data, lecture_state, websocket, connectrobot, mgr: ConnectionManager = Depends(get_conn_mgr),):
         """Enter static content state"""
         from main import chat_histories, MAX_HISTORY_LENGTH
         self.trigger("ev_enter_content")
@@ -348,8 +339,9 @@ class LectureStateMachine:
         audio_stream.seek(0)
         audio_base64 = base64.b64encode(audio_stream.read()).decode("utf-8")
 
-        logger.info("connectrobot: %s", connectrobot)
+        print("connectrobot:", connectrobot)
         connected_audio_clients = get_connected_audio_clients(connectrobot)
+        print("connected_audio_clients:", connected_audio_clients)
            
         # Check if the WebSocket is still open by sending a ping
         is_websocket_alive = True
@@ -358,11 +350,6 @@ class LectureStateMachine:
         except Exception as e:
             is_websocket_alive = False
             logger.warning(f"WebSocket is not connected. Skipping message send. Error: {e}")
-
-        extract_image = data.get("image")
-        lesson_image = 'images/' + extract_image
-        
-        await send_image_to_devices(connectrobot, db, lesson_image, logger)
 
         if is_websocket_alive:
             await websocket.send_text(json.dumps({"text": data.get(f"{selectedLanguageName}Text"), "type": "static","image":data.get("image")}))

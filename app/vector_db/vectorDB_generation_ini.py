@@ -157,12 +157,3 @@ def create_vector_db(uploaded_file):
     except Exception as e:
         logger.exception("Error creating vector DB: %s", e)
         raise
-
-if __name__ == "__main__":
-    import sys
-    if len(sys.argv) != 2:
-        print("Usage: python vector_db_generate_ini.py <pdf_path>")
-        sys.exit(1)
-
-    pdf_path = sys.argv[1]
-    create_vector_db(pdf_path)

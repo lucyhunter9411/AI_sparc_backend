@@ -7,14 +7,6 @@
         {
             "name": "SparcPyClientPi",
             "path": "../SparcPyClientPi"
-        },
-        {
-            "name": "SparcPyClientPC",
-            "path": "../SparcPyClientPC"
-        },
-        {
-            "name": "RAG_Frontend_lucy",
-            "path": "../RAG_Frontend_lucy"
         }
     ],
     "settings": {
@@ -30,4 +22,4 @@
         "editor.formatOnSave": true,
         "python.formatting.provider": "black"
     }
-}
+} 

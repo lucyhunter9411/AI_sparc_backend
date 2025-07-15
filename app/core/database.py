@@ -9,7 +9,7 @@ settings = get_settings()
 # Build the MongoDB URI once
 MONGO_URI = (
     f"mongodb+srv://{quote_plus(settings.mongo_user)}:{quote_plus(settings.mongo_password)}@"
-    f"{settings.mongo_host}/"
+    f"cosmon-sparc-dev-wus-001.global.mongocluster.cosmos.azure.com/"
     f"{settings.mongo_db}?tls=true&authMechanism=SCRAM-SHA-256"
     "&retrywrites=false&maxIdleTimeMS=120000"
 )
