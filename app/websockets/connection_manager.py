@@ -22,6 +22,7 @@ Typical FastAPI usage
 
 from __future__ import annotations
 
+import asyncio
 from collections import defaultdict
 from typing import Dict, Iterator, Set
 
@@ -47,6 +48,20 @@ class ConnectionManager:
         self._roles.pop(ws, None)
         if not self._active[robot_id]:          # drop empty sets
             del self._active[robot_id]
+
+    def disconnect_all(self) -> None:
+        """Disconnect all active WebSocket connections."""
+        for robot_id in list(self._active.keys()):
+            for ws in list(self._active[robot_id]):
+                try:
+                    # Close the WebSocket connection
+                    if not ws.client_state.disconnected:
+                        asyncio.create_task(ws.close())
+                except Exception:
+                    pass  # Ignore errors when closing
+                self._roles.pop(ws, None)
+            self._active[robot_id].clear()
+        self._active.clear()
 
     # ─────────────────────────── role tagging ─────────────────────────
     def tag(self, ws: WebSocket, role: str) -> None:

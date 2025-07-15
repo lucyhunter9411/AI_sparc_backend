@@ -5,7 +5,8 @@ load_dotenv(dotenv_path=Path(__file__).parent / ".env", override=True)
 
 from langchain_community.document_loaders import PyPDFLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain.embeddings.huggingface import HuggingFaceEmbeddings
+# from langchain.embeddings.huggingface import HuggingFaceEmbeddings
+from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
 from transformers import CLIPProcessor, CLIPModel
 from PIL import Image
@@ -15,8 +16,34 @@ import torch
 import os
 import json
 import logging
+from azure.storage.blob import BlobServiceClient, ContentSettings
+import requests
+import tempfile
 
-uploads_dir = os.getenv("UPLOAD_FOLDER_FAISS", "uploads")
+# Azure Blob configuration
+AZURE_CONNECTION_STRING = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
+BLOB_CONTAINER_NAME = "pdf-images"
+
+# Azure Blob client
+blob_service_client = BlobServiceClient.from_connection_string(AZURE_CONNECTION_STRING)
+container_client = blob_service_client.get_container_client(BLOB_CONTAINER_NAME)
+
+def upload_to_blob(local_path, blob_subdir):
+    blob_name = f"{blob_subdir}/{os.path.basename(local_path)}"
+    content_settings = ContentSettings(content_type="application/octet-stream")
+    with open(local_path, "rb") as data:
+        container_client.upload_blob(name=blob_name, data=data, overwrite=True, content_settings=content_settings)
+    blob_url = f"https://{blob_service_client.account_name}.blob.core.windows.net/{BLOB_CONTAINER_NAME}/{blob_name}"
+    return blob_url
+
+def download_pdf(pdf_url):
+    response = requests.get(pdf_url)
+    if response.status_code != 200:
+        raise Exception(f"Failed to download PDF: {pdf_url}")
+    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
+    temp_file.write(response.content)
+    temp_file.close()
+    return temp_file.name
 
 def create_vector_db(uploaded_file):
     logger = logging.getLogger(__name__)
@@ -27,26 +54,23 @@ def create_vector_db(uploaded_file):
         clip_model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32")
         clip_processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
 
-        # DB_TEXT_FAISS_PATH = "app/vector_db/vectorstore/text_faiss"
-        # DB_IMAGE_FAISS_PATH = "app/vector_db/vectorstore/image_faiss"
-        # IMAGE_DIR = "app/vector_db/images"
         DB_TEXT_FAISS_PATH = os.getenv("DB_TEXT_FAISS_PATH", "")
         DB_IMAGE_FAISS_PATH = os.getenv("DB_IMAGE_FAISS_PATH", "")
         IMAGE_DIR = os.getenv("IMAGE_DIR", "")
         os.makedirs(IMAGE_DIR, exist_ok=True) 
 
-
         # Embed Text from PDFs
         logger.info("Embedding text from PDFs...")
         pdf_files = [uploaded_file]
-        # pdf_files = [os.path.join(uploads_dir, f) for f in os.listdir(uploads_dir) if f.endswith('.pdf')]
-        print(pdf_files)
         all_splits = []
         text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
 
         for pdf in pdf_files:
+            if pdf.startswith("http://") or pdf.startswith("https://"):
+                pdf = download_pdf(pdf)
+
             if os.path.exists(pdf):
-                print(f"Processing PDF: {pdf}")
+                logger.info(f"Processing PDF: {pdf}")
 
                 loader = PyPDFLoader(pdf)
                 docs = loader.load()
@@ -55,14 +79,26 @@ def create_vector_db(uploaded_file):
             else:
                 logger.error(f"PDF file not found: {pdf}")
 
+        if not all_splits:
+            raise ValueError("No text extracted from the PDF. Please check the PDF content.")
+
         # Store text embeddings in FAISS
         logger.info("Storing text embeddings in FAISS...")
         text_vectorstore = FAISS.from_documents(all_splits, text_embeddings)
         text_vectorstore.save_local(DB_TEXT_FAISS_PATH)
         logger.info(f"Text embeddings saved to {DB_TEXT_FAISS_PATH}")
 
+        # Correctly set the local path for the FAISS index
+        text_faiss_path = os.path.join(tempfile.gettempdir(), "text_faiss.faiss")
+        faiss.write_index(text_vectorstore.index, text_faiss_path)
+
+        # Upload text FAISS index to blob
+        text_url = upload_to_blob(text_faiss_path, "text_faiss")
+        logger.info(f"Text FAISS index uploaded to {text_url}")
+
         # Generate embeddings for descriptions
         logger.info("Generating embeddings for image descriptions...")
+        
         image_descriptions = [
             "This image is about cause of floatation and sinking. The floating or sinking of an object doesn't depend upon the weight of the object. It depends upon the density of the object and the density of the fluid. The density of an object is measured by calculating the amount of mass present in the given space. If an object’s density is lesser than water, it will float. On the other hand, if the density of an object is more than water, it will sink.",
             "This is image about dispersal of seeds by animals. Animals disperse seeds in several ways. Humans and animals eat fleshy fruits and throw away their seeds in different places. Some fruits are eaten by animals and birds. The seeds, eaten along with the fruits are not digested. These animals excrete the seeds in different places. The seeds emerge into new plants.",
@@ -148,12 +184,29 @@ def create_vector_db(uploaded_file):
         faiss.write_index(image_index, faiss_path)
         logger.info(f"Image description embeddings saved to {faiss_path}")
 
+        # Upload image FAISS index to blob
+        image_url = upload_to_blob(faiss_path, "image_faiss")
+        logger.info(f"Image FAISS index uploaded to {image_url}")
+
         # Save metadata (image descriptions)
         metadata_path = f"{DB_IMAGE_FAISS_PATH}.json"
         with open(metadata_path, "w") as f:
             json.dump({"image_paths": image_paths, "descriptions": image_descriptions}, f, indent=4)
         logger.info(f"Image metadata saved to {metadata_path}")
 
+        # Upload metadata to blob
+        meta_url = upload_to_blob(metadata_path, "image_faiss")
+        logger.info(f"Image metadata uploaded to {meta_url}")
+
     except Exception as e:
         logger.exception("Error creating vector DB: %s", e)
         raise
+
+if __name__ == "__main__":
+    import sys
+    if len(sys.argv) != 2:
+        print("Usage: python vector_db_generate_ini.py <pdf_path>")
+        sys.exit(1)
+
+    pdf_path = sys.argv[1]
+    create_vector_db(pdf_path)

@@ -19,7 +19,7 @@ variables:
   stageWebAppName: 'api-ragbackend-stg-wus-001'
 
   # Prod App Settings
-  ProdWebAppName: 'api-ragbackend-prod-wus2-001'
+  ProdWebAppName: 'api-ragbackend-prod-inc-001'
 
   # Agent VM image name
   vmImageName: 'ubuntu-latest'

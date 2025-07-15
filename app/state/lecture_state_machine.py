@@ -24,6 +24,7 @@ from transitions import Machine, State
 
 import base64
 import wave
+import os
 
 from app.services.stt_service import transcribe_audio
 from app.utils.audio import generate_audio_stream, get_audio_length
@@ -31,6 +32,7 @@ from app.services.shared_data import get_contents, get_time_list, get_hand_raisi
 from app.services.vision_service import  handle_vision_data
 from app.websockets.connection_manager import ConnectionManager
 from app.api.deps import get_conn_mgr
+from app.services.tv_interface import send_image_to_devices
 
 logger = logging.getLogger(__name__)
 
@@ -326,7 +328,15 @@ class LectureStateMachine:
     def on_start_lecture(self):
         logger.info("Lecture started!!!!!!!")
 
-    async def enter_content(self, data, lecture_state, websocket, connectrobot, mgr: ConnectionManager = Depends(get_conn_mgr),):
+    async def enter_content(
+        self, 
+        data, 
+        lecture_state, 
+        websocket,
+        connectrobot, 
+        db,
+        mgr: ConnectionManager = Depends(get_conn_mgr),
+    ) -> None:
         """Enter static content state"""
         from main import chat_histories, MAX_HISTORY_LENGTH
         self.trigger("ev_enter_content")
@@ -339,9 +349,8 @@ class LectureStateMachine:
         audio_stream.seek(0)
         audio_base64 = base64.b64encode(audio_stream.read()).decode("utf-8")
 
-        print("connectrobot:", connectrobot)
+        logger.info("connectrobot: %s", connectrobot)
         connected_audio_clients = get_connected_audio_clients(connectrobot)
-        print("connected_audio_clients:", connected_audio_clients)
            
         # Check if the WebSocket is still open by sending a ping
         is_websocket_alive = True
@@ -350,6 +359,14 @@ class LectureStateMachine:
         except Exception as e:
             is_websocket_alive = False
             logger.warning(f"WebSocket is not connected. Skipping message send. Error: {e}")
+
+        extract_image = data.get("image")
+        lesson_image = 'images/' + extract_image
+
+        base_url = os.getenv("base_url")
+        image_path_to_TV = base_url + lesson_image.replace("\\", "/")
+        
+        await send_image_to_devices(connectrobot, db, image_path_to_TV, logger)
 
         if is_websocket_alive:
             await websocket.send_text(json.dumps({"text": data.get(f"{selectedLanguageName}Text"), "type": "static","image":data.get("image")}))

@@ -105,13 +105,13 @@ async def websocket_lesson_audio(websocket: WebSocket, robot_id: str):
                             )
                         )
                         data_to_audio[robot_id]["data"] = None
-            await asyncio.sleep(1)  # Add a small delay to avoid busy waiting
+            await asyncio.sleep(0.1)  # Reduced delay to catch data more quickly
     except WebSocketDisconnect:
         logger.error("Client disconnected from testdata WebSocket")
 
 # WebSocket endpoint for lecture
 @router.websocket("/ws/{lecture_id}/{connectrobot}")
-async def lecture_websocket_endpoint(websocket: WebSocket, lecture_id: str, connectrobot: str):
+async def lecture_websocket_endpoint(websocket: WebSocket, lecture_id: str, connectrobot: str, db=Depends(get_db)):
     global current_state_machine, robot_id_before
     await websocket.accept()
     lecture_states = get_lecture_states()
@@ -165,7 +165,7 @@ async def lecture_websocket_endpoint(websocket: WebSocket, lecture_id: str, conn
                 state_machine.ev_to_conducting()
             else:
                 data_to_audio[connectrobot]["data"] = data_frontend
-                await state_machine.enter_content(data_frontend, lecture_to_audio[connectrobot], websocket, connectrobot)
+                await state_machine.enter_content(data_frontend, lecture_to_audio[connectrobot], websocket, connectrobot, db)
 
         if not lecture_to_audio[connectrobot]["is_active"]:
             state_machine.ev_init()

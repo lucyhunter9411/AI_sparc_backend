@@ -27,3 +27,9 @@ numpy
 torch
 Pillow
 pymupdf
+psutil
+httpx
+requests
+azure-storage-blob
+langchain-huggingface
+googletrans

@@ -87,11 +87,20 @@ class Prompt(BaseModel):
         json_encoders = {ObjectId: str}
         orm_mode = True
         
-# class Vision_Output(BaseModel):
-#     id: Optional[PyObjectId] = Field(alias="_id", default=None)
-#     image: Optional[str] = Field(None) 
-#     vision_output: str = Field(...) 
-#     vision_output: str = Field(...) 
-#     class Config:
-#         json_encoders = {ObjectId: str}
-#         orm_mode = True
+class DeviceList(BaseModel):
+    device_id: str
+    room_name: str
+
+    class Config:
+        # This allows Pydantic to convert the data model to and from MongoDB's BSON format
+        json_encoders = {
+            ObjectId: str
+        }
+
+class Devices(BaseModel):
+    id: Optional[PyObjectId] = Field(alias="_id", default=None)
+    robot_id: str = Field(...)
+    device: List[DeviceList]
+    class Config:
+        json_encoders = {ObjectId: str}
+        orm_mode = True

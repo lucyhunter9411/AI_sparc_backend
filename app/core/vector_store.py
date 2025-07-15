@@ -4,9 +4,10 @@ from contextlib import asynccontextmanager
 from langchain_community.vectorstores import FAISS
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from app.core.config import get_settings
+import os
 
 settings = get_settings()
-DB_TEXT_FAISS_PATH = "app/vector_db/vectorstore/text_faiss"
+DB_TEXT_FAISS_PATH = os.getenv("DB_TEXT_FAISS_PATH")
 EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 
 @asynccontextmanager    
