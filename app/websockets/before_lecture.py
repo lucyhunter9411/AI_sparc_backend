@@ -38,8 +38,7 @@ from app.vector_db.image_retrieve_based_answer import  retrieve_image_safe
 from app.api.deps import get_conn_mgr                  # → ConnectionManager singleton
 from app.websockets.connection_manager import ConnectionManager
 from app.schemas.ws import WSMessage
-from app.websockets.send_image_to_devices import send_image_to_devices
-from app.api.deps import get_db
+
 
 # --- services ---------------------------------------------------------------                   # conversation history
 from app.services.vision_service import  handle_vision_data
@@ -48,13 +47,9 @@ from app.services.audio_chat_pipeline import pipeline
 import os
 # ---------------------------------------------------------------------------
 
-from dotenv import load_dotenv
-from pathlib import Path
-# explicitly point at your .env
-load_dotenv(dotenv_path=Path(__file__).parent / ".env", override=True)
-
 router = APIRouter()
 log = logging.getLogger(__name__)
+
 
 # ───────────────────────── websocket entrypoint ─────────────────────────────
 @router.websocket("/ws/{robot_id}/before/lecture")
@@ -62,7 +57,6 @@ async def before_lecture(
     ws: WebSocket,
     robot_id: str,
     mgr: ConnectionManager = Depends(get_conn_mgr),
-    db=Depends(get_db)  # Use dependency injection to get the database session
 ) -> None:
     """
     Main handler for the before-lecture channel.
@@ -118,9 +112,6 @@ async def before_lecture(
                         log.error(f"[{robot_id}] retrieve_image failed: {e}", exc_info=True)
                         closest_image_path = None
                     log.info(f"[{robot_id}] retrieve_image completed successfully: {closest_image_path}")
-
-                    await send_image_to_devices(robot_id, db, closest_image_path, log)
-
                     # Send assistant's response
                     out_msg = {
                         "robot_id": robot_id,
@@ -146,9 +137,6 @@ async def before_lecture(
                         log.error(f"[{robot_id}] retrieve_image failed: {e}", exc_info=True)
                         closest_image_path = None
                     log.info(f"[{robot_id}] retrieve_image completed successfully: {closest_image_path}")
-                    
-                    await send_image_to_devices(robot_id, db, closest_image_path, log)
-
                     # Send assistant's response
                     out_msg = {
                         "robot_id": robot_id,

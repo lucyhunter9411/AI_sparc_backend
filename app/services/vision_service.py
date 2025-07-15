@@ -70,14 +70,12 @@ async def handle_vision_data(current_state_machine, robot_id, websocket):
                     audio_stream = generate_audio_stream(result, selectedLanguageName)
                     audio_length = get_audio_length(audio_stream)
                     audio_stream.seek(0)
-                    # audio_base64 = base64.b64encode(audio_stream.read()).decode("utf-8")
-                    audio_bytes = audio_stream.read()  # Read the audio as bytes
+                    audio_base64 = base64.b64encode(audio_stream.read()).decode("utf-8")
 
                     data = {
                         "robot_id": robot_id,
                         "text": result,
-                        # "audio": audio_base64,
-                        "audio": list(audio_bytes),  # Use byte array instead of base64
+                        "audio": audio_base64,
                         "type": "model",
                     }
                     logger.info(
