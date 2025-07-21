@@ -32,6 +32,8 @@ from app.websockets.connection_manager import ConnectionManager
 from app.websockets.lecture import router as lecture_router
 from app.websockets.before_lecture import router as before_lecture_router
 from app.api.classrooms import router as classrooms_router
+from app.vector_db.vectorDB_generation_ini import create_vector_db  
+from app.vector_db.vectorDB_generation import process_pdf_and_create_or_update_vector_db
 from app.vector_db.vectorDB_image_decription_update import update_image_embedding_on_blob
 
 from app.services.tv_interface import sign_in
@@ -39,8 +41,6 @@ from app.services.tv_interface import sign_in
 import subprocess
 import sys
 import requests
-from azure.storage.blob import BlobServiceClient, ContentSettings
-from azure.core.exceptions import ResourceNotFoundError
 import uuid
 
 # --- add just above the FastAPI() call --------------
@@ -49,8 +49,7 @@ from langchain_community.vectorstores import FAISS
 from langchain_community.embeddings import HuggingFaceEmbeddings
 import asyncio
 from PIL import Image
-
-from app.services.blob_storage_service import get_blob_storage_service
+from Schema import DeviceList  # Add this import statement
 
 
 from app.services.llm_service import (
@@ -67,6 +66,21 @@ setup_logging(level="INFO")        # single call replaces logging.basicConfig
 logger = logging.getLogger(__name__)  # module-specific logger
 
 TESTING: bool = os.getenv("TESTING", "0") == "1"  # added for pytest
+LOCAL_MODE = os.getenv("LOCAL_MODE", "0").lower() in ("1", "true", "yes")
+
+if not LOCAL_MODE:
+    from azure.storage.blob import BlobServiceClient, ContentSettings
+    AZURE_CONNECTION_STRING = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
+    BLOB_CONTAINER_NAME = "pdf-images"
+    blob_service_client = BlobServiceClient.from_connection_string(AZURE_CONNECTION_STRING)
+    container_client = blob_service_client.get_container_client(BLOB_CONTAINER_NAME)
+    BLOB_CONTAINER_NAME = "pdf-images"
+    container_client = blob_service_client.get_container_client(BLOB_CONTAINER_NAME)
+else:
+    # Optionally, set these to None for clarity
+    blob_service_client = None
+    container_client = None
+    container_client = None
 
 from bson import ObjectId
 from app.core.database import mongo_db 
@@ -74,135 +88,75 @@ from app.core.database import mongo_db
 # make sure this is at module scope, before your @app.on_event
 custom_prompt_template = ""
 
-DB_TEXT_FAISS_PATH = os.getenv("DB_TEXT_FAISS_PATH")
+DB_TEXT_FAISS_PATH = "app/vector_db/vectorstore/text_faiss"
 EMBEDDING_MODEL    = "sentence-transformers/all-MiniLM-L6-v2"
 faiss_text_db = None      # will be initialised once in lifespan
 
-# Azure Blob config
-AZURE_CONNECTION_STRING = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
-BLOB_CONTAINER_NAME = "pdf-images"
+# # Azure Blob config
+# AZURE_CONNECTION_STRING = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
+# BLOB_CONTAINER_NAME = "pdf-images"
 
-# Initialize Azure Blob client
-blob_service_client = BlobServiceClient.from_connection_string(AZURE_CONNECTION_STRING)
-container_client = blob_service_client.get_container_client(BLOB_CONTAINER_NAME)
+# # Initialize Azure Blob client
+# blob_service_client = BlobServiceClient.from_connection_string(AZURE_CONNECTION_STRING)
+# container_client = blob_service_client.get_container_client(BLOB_CONTAINER_NAME)
 
 manager = ConnectionManager() 
 
-# @asynccontextmanager
-# async def lifespan(app: FastAPI):
-#     """
-#     Application-wide startup / shutdown lifecycle hook.
-
-#     * Loads the custom prompt template from Cosmos Mongo.
-#     * Loads the FAISS vector store into memory.
-#     * Publishes a ConnectionManager instance at `app.state.conn_mgr`
-#       so any request handler can `request.app.state.conn_mgr`.
-#     """
-#     global faiss_text_db, custom_prompt_template
-
-#     # ───── expose ConnectionManager early ─────
-#     app.state.conn_mgr = manager
-    
-#     # Clear any existing connections to prevent stale connections from previous deployments
-#     logger.info("🔄 Clearing any existing WebSocket connections on startup...")
-#     app.state.conn_mgr.disconnect_all()
-
-#     # ───── perform existing startup work ─────
-#     try:
-#         async with mongo_db() as db:
-#             latest_prompt = db.prompt.find_one(
-#                 {"name": "system_prompt"}
-#             )
-#             if latest_prompt:
-#                 custom_prompt_template = latest_prompt["prompt"]
-#                 logger.info("✅ Loaded custom prompt template on startup.")
-#             else:
-#                 logger.info("ℹ️  No custom prompt found in the database.")
-
-#         faiss_text_db = FAISS.load_local(
-#             DB_TEXT_FAISS_PATH,
-#             HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL),
-#             allow_dangerous_deserialization=True,
-#         )
-#         logger.info("✅ FAISS text index ready (%s).", DB_TEXT_FAISS_PATH)
-#         if faiss_text_db is None:
-#                 logger.error("❌ FAISS text index is None after loading.")
-#         else:
-#             logger.info("✅ FAISS text index successfully loaded.")
-
-#     except Exception:
-#         logger.exception("❌ Error during startup lifespan")
-
-#     # ───────────── application runs ─────────────
-#     yield
-
-#     # ───────────── graceful shutdown ────────────
-#     # Disconnect all WebSocket connections to prevent stale connections
-#     if hasattr(app.state, "conn_mgr"):
-#         logger.info("🔄 Disconnecting all WebSocket connections during shutdown...")
-#         app.state.conn_mgr.disconnect_all()
-#         del app.state.conn_mgr
-
-def download_faiss_from_blob(container: str, blob_prefix: str, local_dir: str):
-    """
-    Download FAISS index from Azure Blob Storage using the unified service.
-    """
-    blob_service = get_blob_storage_service()
-    os.makedirs(local_dir, exist_ok=True)
-
-    index_blob_path = f"{blob_prefix}/index.faiss"
-    local_path = os.path.join(local_dir, "index.faiss")
-
-    try:
-        data = blob_service.get(container, index_blob_path)
-        with open(local_path, "wb") as f:
-            f.write(data)
-        logger.info("✅ Downloaded FAISS index to %s", local_path)
-    except Exception as e:
-        logger.error("❌ Failed to download FAISS index: %s", e)
-        raise
-
+@asynccontextmanager
 async def lifespan(app: FastAPI):
+    """
+    Application-wide startup / shutdown lifecycle hook.
+
+    * Loads the custom prompt template from Cosmos Mongo.
+    * Loads the FAISS vector store into memory.
+    * Publishes a ConnectionManager instance at `app.state.conn_mgr`
+      so any request handler can `request.app.state.conn_mgr`.
+    """
     global faiss_text_db, custom_prompt_template
 
+    # ───── expose ConnectionManager early ─────
     app.state.conn_mgr = manager
+    
+    # Clear any existing connections to prevent stale connections from previous deployments
     logger.info("🔄 Clearing any existing WebSocket connections on startup...")
     app.state.conn_mgr.disconnect_all()
 
+    # ───── perform existing startup work ─────
     try:
-        # ───── Load custom system prompt ─────
         async with mongo_db() as db:
-            latest_prompt = db.prompt.find_one({"name": "system_prompt"})
+            latest_prompt = db.prompt.find_one(
+                {"name": "system_prompt"}
+            )
             if latest_prompt:
                 custom_prompt_template = latest_prompt["prompt"]
                 logger.info("✅ Loaded custom prompt template on startup.")
             else:
                 logger.info("ℹ️  No custom prompt found in the database.")
 
-        # ───── Download FAISS from Azure and Load ─────
-        download_faiss_from_blob(
-            container="pdf-images",
-            blob_prefix="text_faiss",
-            local_dir="./local_faiss_index"
-        )
-
         faiss_text_db = FAISS.load_local(
-            "./local_faiss_index",
+            DB_TEXT_FAISS_PATH,
             HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL),
             allow_dangerous_deserialization=True,
         )
+        logger.info("✅ FAISS text index ready (%s).", DB_TEXT_FAISS_PATH)
+        if faiss_text_db is None:
+                logger.error("❌ FAISS text index is None after loading.")
+        else:
+            logger.info("✅ FAISS text index successfully loaded.")
 
-        logger.info("✅ FAISS text index loaded and ready.")
-    except Exception as e:
+    except Exception:
         logger.exception("❌ Error during startup lifespan")
 
+    # ───────────── application runs ─────────────
     yield
 
-    # ───── Clean up connections ─────
+    # ───────────── graceful shutdown ────────────
+    # Disconnect all WebSocket connections to prevent stale connections
     if hasattr(app.state, "conn_mgr"):
         logger.info("🔄 Disconnecting all WebSocket connections during shutdown...")
         app.state.conn_mgr.disconnect_all()
         del app.state.conn_mgr
+
 
 app = FastAPI(lifespan=lifespan)
 
@@ -566,16 +520,26 @@ async def upload_image(image: UploadFile = File(...)):
 
         
 # Azure Blob settings
-AZURE_CONNECTION_STRING = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
 CONTAINER_NAME = "dev"
 BLOB_FOLDER = "lessons/images"
 
-# Initialize Azure Blob client
-blob_service_client = BlobServiceClient.from_connection_string(AZURE_CONNECTION_STRING)
-container_client = blob_service_client.get_container_client(CONTAINER_NAME)
-
 @app.post("/upload/lessons/images/")
 async def upload_lesson_image(image: UploadFile = File(...)):
+    if LOCAL_MODE:
+        logger.info("LOCAL_MODE is true now!!!")
+        # Ensure the local directory exists
+        local_dir = "uploads/lesson_image"
+        os.makedirs(local_dir, exist_ok=True)
+        # Save the uploaded file
+        local_path = os.path.join(local_dir, image.filename)
+        try:
+            with open(local_path, "wb") as buffer:
+                shutil.copyfileobj(image.file, buffer)
+            # Return a local URL or file path (adjust as needed for your frontend)
+            return JSONResponse(content={"imageUrl": f"/{local_dir}/{image.filename}"})
+        except Exception as e:
+            return JSONResponse(status_code=500, content={"message": str(e)})
+
     try:
         # Generate a unique filename
         ext = os.path.splitext(image.filename)[1]
@@ -594,20 +558,42 @@ async def upload_lesson_image(image: UploadFile = File(...)):
     
     except Exception as e:
         return JSONResponse(status_code=500, content={"message": str(e)})
-    
-SOURCE_CONTAINER = "pdf-images"
-source_container_client = blob_service_client.get_container_client(SOURCE_CONTAINER)
 
 @app.post("/upload/lessons/images/from-url/")
 async def upload_lesson_image_from_url(image_url: str = Form(...)):
+    if LOCAL_MODE:
+        logger.info("LOCAL_MODE is true now!!!")
+        try:
+            # Remove leading slash if present
+            local_source_path = image_url.lstrip("/")
+            if not os.path.exists(local_source_path):
+                raise HTTPException(status_code=404, detail="Source image not found.")
+
+            # Ensure the destination directory exists
+            dest_dir = "uploads/lesson_image"
+            os.makedirs(dest_dir, exist_ok=True)
+
+            # Generate a unique filename to avoid collisions
+            ext = os.path.splitext(local_source_path)[1]
+            unique_filename = f"{uuid.uuid4().hex}{ext}"
+            dest_path = os.path.join(dest_dir, unique_filename)
+
+            # Copy the file
+            shutil.copyfile(local_source_path, dest_path)
+
+            # Return the new local URL
+            return JSONResponse(content={"imageUrl": f"/{dest_dir}/{unique_filename}"})
+        except Exception as e:
+            return JSONResponse(status_code=500, content={"message": str(e)})
+
     try:
         # Parse blob name from full URL
-        prefix = f"https://{blob_service_client.account_name}.blob.core.windows.net/{SOURCE_CONTAINER}/"
+        prefix = f"https://{blob_service_client.account_name}.blob.core.windows.net/{BLOB_CONTAINER_NAME}/"
         if not image_url.startswith(prefix):
             raise HTTPException(status_code=400, detail="Invalid Azure blob URL")
 
         source_blob_path = image_url.replace(prefix, "")
-        source_blob_client = source_container_client.get_blob_client(source_blob_path)
+        source_blob_client = container_client.get_blob_client(source_blob_path)
 
         # Download image as bytes
         blob_data = source_blob_client.download_blob().readall()
@@ -830,9 +816,9 @@ async def deleteLecture(lectureID: str = Form(...), db=Depends(get_db)):
 
 # Define the absolute path for uploads
 UPLOAD_FOLDER_FAISS = os.getenv("UPLOAD_FOLDER_FAISS", "uploads")
-if not UPLOAD_FOLDER_FAISS.startswith("http"):
-    os.makedirs(UPLOAD_FOLDER_FAISS, exist_ok=True)
 IMAGE_DIR = os.getenv("IMAGE_DIR", "app/vector_db/images")
+if not LOCAL_MODE:
+    os.makedirs(UPLOAD_FOLDER_FAISS, exist_ok=True)
     
 @app.post("/create-vector-db/v0/")
 async def create_vector_db_v0_endpoint(file_name: str = Form(...)):
@@ -852,7 +838,12 @@ async def create_vector_db_v0_endpoint(file_name: str = Form(...)):
 @app.post("/create-vector-db/v1/")
 async def create_vector_db_v1_endpoint(file_name: str = Form(...)):
     try:
-        file_location = os.path.join(UPLOAD_FOLDER_FAISS, file_name)
+        if LOCAL_MODE:
+            logger.info("LOCAL_MODE is true now!!!")
+            file_location = os.path.join("uploads/pdf_file", file_name)
+
+        else:
+            file_location = os.path.join(UPLOAD_FOLDER_FAISS, file_name)
 
         # Run with the current Python interpreter path
         subprocess.Popen([sys.executable, "app/vector_db/vectorDB_generation.py", file_location])
@@ -869,30 +860,39 @@ DB_METADATA_FAISS_PATH = os.getenv("DB_METADATA_FAISS_PATH")
 UPLOAD_FOLDER_FAISS = os.getenv("UPLOAD_FOLDER_FAISS")
 @app.get("/faiss/images/")
 async def get_images():
+    if LOCAL_MODE:
+        logger.info("LOCAL_MODE is true now!!!")
+        metadata_path = "app/vector_db/vectorstore/image_faiss/image_faiss_metadata.json"
+        try:
+            with open(metadata_path, "r", encoding="utf-8") as f:
+                metadata = json.load(f)
+            image_paths = metadata.get("image_paths", [])
+            descriptions = metadata.get("descriptions", [])
+            images_with_descriptions = [
+                {
+                    "image_path": path,
+                    "description": desc
+                }
+                for path, desc in zip(image_paths, descriptions)
+            ]
+            return {"images": images_with_descriptions}
+        except Exception as e:
+            logger.error(f"Failed to load local image metadata: {e}")
+            raise HTTPException(status_code=500, detail="Failed to load local image metadata")
     try:
-        # Fetch the metadata JSON from Azure Blob Storage
         response = requests.get(DB_METADATA_FAISS_PATH)
         response.raise_for_status()  # Raise an error for bad responses
-
-        # Parse the JSON content
         metadata = response.json()
-
-        # Extract image paths and descriptions
         image_paths = metadata.get("image_paths", [])
         descriptions = metadata.get("descriptions", [])
-
-        # Combine image paths and descriptions into a list of dictionaries
         images_with_descriptions = [
             {"image_path": f"{UPLOAD_FOLDER_FAISS}/images/{path}", "description": desc}
             for path, desc in zip(image_paths, descriptions)
         ]
-
         return {"images": images_with_descriptions}
-
     except requests.exceptions.RequestException as e:
         logger.error(f"Failed to fetch metadata: {e}")
         raise HTTPException(status_code=500, detail="Failed to fetch image metadata")
-
     except Exception as e:
         logger.error(f"An error occurred: {e}")
         raise HTTPException(status_code=500, detail="An unexpected error occurred")
@@ -920,6 +920,15 @@ async def image_description_update(
 async def upload_file(file: UploadFile = File(...)):
     if file is None:
         raise HTTPException(status_code=422, detail="No file provided.")
+
+    if LOCAL_MODE:
+        try:
+            file_location = os.path.join("uploads/pdf_file", file.filename)
+            with open(file_location, "wb") as f:
+                f.write(await file.read())
+            return JSONResponse(status_code=200, content={"message": "File uploaded successfully!", "file_name": file.filename})
+        except Exception as e:
+            return JSONResponse(status_code=500, content={"message": f"File upload failed: {str(e)}"})
 
     try:
         # Read file bytes

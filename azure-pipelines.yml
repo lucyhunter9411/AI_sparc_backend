@@ -14,7 +14,7 @@ variables:
 
   # Dev App Settings
   devWebAppName: 'app-ragbackend-dev-wus-001'
-
+  devRGName: 'rg-ragmodel-dev-wus-001'
   # Stage App Settings
   stageWebAppName: 'api-ragbackend-stg-wus-001'
 
@@ -120,6 +120,55 @@ stages:
               azureSubscription: '$(azureServiceConnectionId)'
               Action: 'Start Azure App Service'
               WebAppName: '$(devWebAppName)'
+
+- stage: Deploy_Dev_Stage
+  displayName: 'Deploy to Dev Stage'
+  dependsOn: Build
+  condition: and(succeeded(), startsWith(variables['build.sourceBranch'], 'refs/heads/develop'))
+  jobs:
+  - deployment: DeployDevStage
+    displayName: 'Deploy to Backend API - Dev Stage'
+    environment:
+      name: ragmodel_dev
+    strategy:
+     runOnce:
+        deploy:
+          steps:
+
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: '$(pythonVersion)'
+            displayName: 'Use Python version'
+
+          - task: AzureAppServiceManage@0
+            inputs:
+              azureSubscription: '$(azureServiceConnectionId)'
+              Action: 'Stop Azure App Service'
+              WebAppName: '$(devWebAppName)'
+              SpecifySlotOrASE: true
+              ResourceGroupName: '$(devRGName)'
+              Slot: 'stg'
+
+          - task: AzureWebApp@1
+            displayName: 'Deploy Azure Web App : app-ragbackend-dev-wus-001-stg'
+            inputs:
+              azureSubscription: '$(azureServiceConnectionId)'
+              appType: 'webAppLinux'
+              appName: '$(devWebAppName)'
+              deployToSlotOrASE: true
+              resourceGroupName: '$(devRGName)'
+              slotName: 'stg'
+              package: '$(Pipeline.Workspace)/drop/$(Build.BuildId).zip'
+              startUpCommand: 'pip install --no-cache-dir -r requirements.txt && pip list && gunicorn -w 2 -k uvicorn.workers.UvicornWorker -b 0.0.0.0:8000 main:app'
+
+          - task: AzureAppServiceManage@0
+            inputs:
+              azureSubscription: '$(azureServiceConnectionId)'
+              Action: 'Start Azure App Service'
+              WebAppName: '$(devWebAppName)'
+              SpecifySlotOrASE: true
+              ResourceGroupName: '$(devRGName)'
+              Slot: 'stg'
 
 - stage: Deploy_Stage
   displayName: 'Deploy to Stage'

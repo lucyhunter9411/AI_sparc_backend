@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 # Apple Silicon specific configurations
 os.environ['PYTORCH_ENABLE_MPS_FALLBACK'] = '1'
 os.environ['TOKENIZERS_PARALLELISM'] = 'false'
+LOCAL_MODE = os.getenv("LOCAL_MODE", "0").lower() in ("1", "true", "yes")
 
 if platform.machine() == 'arm64':
     logger.info("Detected Apple Silicon (ARM64) - applying specific configurations")
@@ -58,37 +59,67 @@ async def retrieve_image_safe(user_query, generated_text, robot_id, top_k=1):
         # Initialize FAISS index and metadata
         DB_IMAGE_FAISS_PATH = os.getenv("DB_IMAGE_FAISS_PATH", "https://classroomdata.blob.core.windows.net/pdf-images/image_faiss")
         UPLOAD_FOLDER_FAISS = os.getenv("UPLOAD_FOLDER_FAISS")
-        local_faiss_path = os.path.join(tempfile.gettempdir(), "index.faiss")
-        local_json_path = os.path.join(tempfile.gettempdir(), "image_faiss_metadata.json")
 
-        faiss_url = f"{DB_IMAGE_FAISS_PATH}/index.faiss"
-        logger.info(f"Downloading FAISS index from: {faiss_url}")
-        response = requests.get(faiss_url)
-        response.raise_for_status()
-        with open(local_faiss_path, "wb") as f:
-            f.write(response.content)
-        image_index = faiss.read_index(local_faiss_path)
-        logger.info("FAISS index downloaded and loaded successfully")
+        if LOCAL_MODE:
+            # Use local files
+            local_faiss_path = "app/vector_db/vectorstore/image_faiss/index.faiss"
+            local_json_path = "app/vector_db/vectorstore/image_faiss/image_faiss_metadata.json"
+            logger.info(f"Using local FAISS index: {local_faiss_path}")
+            logger.info(f"Using local metadata: {local_json_path}")
+            image_index = faiss.read_index(local_faiss_path)
+            with open(local_json_path, "r") as f:
+                metadata = json.load(f)
+            logger.info("Local FAISS index and metadata loaded successfully")
 
-        metadata_url = f"{DB_IMAGE_FAISS_PATH}/image_faiss_metadata.json"
-        logger.info(f"Downloading metadata from: {metadata_url}")
-        response = requests.get(metadata_url)
-        response.raise_for_status()
-        with open(local_json_path, "wb") as f:
-            f.write(response.content)
-        with open(local_json_path, "r") as f:
-            metadata = json.load(f)
-        logger.info("Metadata downloaded and loaded successfully")
+            raw_image_paths = metadata["image_paths"]
+            image_paths = []
+            for path in raw_image_paths:
+                # Normalize slashes
+                normalized_path = os.path.normpath(path.replace('\\', '/'))
+                # Remove the leading 'app/vector_db/images/' if present
+                if normalized_path.startswith("app" + os.sep + "vector_db" + os.sep + "images" + os.sep):
+                    url_path = "images" + os.sep + normalized_path.split(os.sep, 4)[-1]
+                else:
+                    # fallback: just use the filename
+                    url_path = "images" + os.sep + os.path.basename(normalized_path)
+                image_paths.append(f"http://localhost:8000/{url_path.replace(os.sep, '/')}")
+                logger.info(f"Normalized path: {path} -> {url_path}")
+                if not os.path.exists(normalized_path):
+                    logger.warning(f"Image file does not exist: {normalized_path}")
+        else:
+            # Download from Azure
+            local_faiss_path = os.path.join(tempfile.gettempdir(), "index.faiss")
+            local_json_path = os.path.join(tempfile.gettempdir(), "image_faiss_metadata.json")
 
-        raw_image_paths = metadata["image_paths"]
-        image_paths = []
-        for path in raw_image_paths:
-            # normalized_path = os.path.normpath(path.replace('\\', '/'))
-            # image_paths.append(normalized_path)
-            # logger.info(f"Normalized path: {path} -> {normalized_path}")
-            # if not os.path.exists(normalized_path):
-            #     logger.warning(f"Image file does not exist: {normalized_path}")
-            image_paths.append(f"{UPLOAD_FOLDER_FAISS}/images/{path}")
+            faiss_url = f"{DB_IMAGE_FAISS_PATH}/index.faiss"
+            logger.info(f"Downloading FAISS index from: {faiss_url}")
+            response = requests.get(faiss_url)
+            response.raise_for_status()
+            with open(local_faiss_path, "wb") as f:
+                f.write(response.content)
+            image_index = faiss.read_index(local_faiss_path)
+            logger.info("FAISS index downloaded and loaded successfully")
+
+            metadata_url = f"{DB_IMAGE_FAISS_PATH}/image_faiss_metadata.json"
+            logger.info(f"Downloading metadata from: {metadata_url}")
+            response = requests.get(metadata_url)
+            response.raise_for_status()
+            with open(local_json_path, "wb") as f:
+                f.write(response.content)
+            with open(local_json_path, "r") as f:
+                metadata = json.load(f)
+            logger.info("Metadata downloaded and loaded successfully")
+            
+            raw_image_paths = metadata["image_paths"]
+            image_paths = []
+            for path in raw_image_paths:
+                # normalized_path = os.path.normpath(path.replace('\\', '/'))
+                # image_paths.append(normalized_path)
+                # logger.info(f"Normalized path: {path} -> {normalized_path}")
+                # if not os.path.exists(normalized_path):
+                #     logger.warning(f"Image file does not exist: {normalized_path}")
+                image_paths.append(f"{UPLOAD_FOLDER_FAISS}/images/{path}")
+
 
         # Process the query
         clip_model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32").to(torch.device("cpu"))
