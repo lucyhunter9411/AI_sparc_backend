@@ -128,12 +128,28 @@ async def before_lecture(
                         log.error(f"[{robot_id}] send_image_to_devices failed: {e}", exc_info=True)
                         # Continue execution even if image sending fails
 
-                    # Send assistant's response
+                    # # Send assistant's response
+                    # out_msg = {
+                    #     "robot_id": robot_id,
+                    #     "type": "model",
+                    #     "text": result["assistant_text"],
+                    #     "audio": list(result["wav_bytes"]),
+                    #     "ts": time.time(),
+                    #     "image_path": closest_image_path
+                    # }
+                    # await mgr.send_role(robot_id, "frontend", out_msg)
+
+                    def chunk_bytes(data, chunk_size=1024):
+                        return [data[i:i+chunk_size] for i in range(0, len(data), chunk_size)]
+
+                    audio_chunks = chunk_bytes(result["wav_bytes"], chunk_size=1024)
+                    # Optionally, encode each chunk as base64 if needed for JSON transport
+
                     out_msg = {
                         "robot_id": robot_id,
                         "type": "model",
                         "text": result["assistant_text"],
-                        "audio": list(result["wav_bytes"]),
+                        "audio_chunks": [list(chunk) for chunk in audio_chunks],  # or base64-encoded
                         "ts": time.time(),
                         "image_path": closest_image_path
                     }
@@ -172,12 +188,27 @@ async def before_lecture(
                     }
                     await mgr.send_role(robot_id, "frontend", out_msg)
                     
-                    # Send assistant's response
+                    # # Send assistant's response
+                    # out_msg = {
+                    #     "robot_id": robot_id,
+                    #     "type": "model",
+                    #     "text": result["assistant_text"],
+                    #     "audio": list(result["wav_bytes"]),
+                    #     "ts": time.time(),
+                    # }
+                    # await mgr.send_role(robot_id, "audio", out_msg)
+
+                    def chunk_bytes(data, chunk_size=1024):
+                        return [data[i:i+chunk_size] for i in range(0, len(data), chunk_size)]
+
+                    audio_chunks = chunk_bytes(result["wav_bytes"], chunk_size=1024)
+                    # Optionally, encode each chunk as base64 if needed for JSON transport
+
                     out_msg = {
                         "robot_id": robot_id,
                         "type": "model",
                         "text": result["assistant_text"],
-                        "audio": list(result["wav_bytes"]),
+                        "audio_chunks": [list(chunk) for chunk in audio_chunks],  # or base64-encoded
                         "ts": time.time(),
                     }
                     await mgr.send_role(robot_id, "audio", out_msg)
