@@ -170,6 +170,22 @@ async def before_lecture(
                         log.error(f"[{robot_id}] retrieve_image failed: {e}", exc_info=True)
                         closest_image_path = None
                     log.info(f"[{robot_id}] retrieve_image completed successfully: {closest_image_path}")
+
+                    # Send assistant's response
+                    out_msg_frontend = {
+                        "robot_id": robot_id,
+                        "type": "model",
+                        "text": "Retrieved image",
+                        "ts": time.time(),
+                        "image_path": closest_image_path
+                    }
+                    
+                    log.info(f"[{robot_id}] About to send to frontend: {out_msg_frontend}")
+                    try:
+                        await mgr.send_role(robot_id, "frontend", out_msg_frontend)
+                        log.info(f"[{robot_id}] Sent to frontend successfully.")
+                    except Exception as e:
+                        log.error(f"[{robot_id}] Error sending to frontend: {e}", exc_info=True)
                     
                     # Make send_image_to_devices non-blocking so it doesn't prevent audio response
                     try:
@@ -177,16 +193,6 @@ async def before_lecture(
                     except Exception as e:
                         log.error(f"[{robot_id}] send_image_to_devices failed: {e}", exc_info=True)
                         # Continue execution even if image sending fails
-
-                    # Send assistant's response
-                    out_msg = {
-                        "robot_id": robot_id,
-                        "type": "model",
-                        "text": "",
-                        "ts": time.time(),
-                        "image_path": closest_image_path
-                    }
-                    await mgr.send_role(robot_id, "frontend", out_msg)
                     
                     # # Send assistant's response
                     # out_msg = {
