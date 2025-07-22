@@ -1,31 +1,3 @@
-"""
-/ws/{robot_id}/before/lecture
-=============================
-
-• A client connects, sends **one** "register" frame to declare its role
-  (``{"type":"register","data":{"client":"speech"}}`` or
-   ``{"type":"register","data":{"client":"audio"}}``).
-
-• "speech" frames contain a base-64 WAV clip; the backend
-
-      1. runs STT (Whisper / Azure etc.),
-      2. adds the user turn to the running conversation history,
-      3. builds a prompt with the trimmed history,
-      4. gets an LLM reply,
-      5. appends the assistant turn to history,
-      6. calls TTS,
-      7. broadcasts the TTS WAV **only** to sockets that registered
-         as *audio*.
-
-• "audio" frames would be handled symmetrically if you ever send them
-  the other way (left as a TODO).
-
-• "ping" → "pong" is unchanged.
-
-Everything heavy (STT, LLM, TTS) runs in an `asyncio.create_task()` so
-the socket never blocks long enough to miss keep-alive pings.
-"""
-
 from __future__ import annotations
 
 import asyncio, logging, time
@@ -132,10 +104,7 @@ async def before_lecture(
                     log.info(f"[{robot_id}] User text: {result['user_text']}")
                     log.info(f"[{robot_id}] Assistant text: {result['assistant_text']}")
                     try:
-                        # closest_image_path_ini = await asyncio.to_thread(retrieve_image_safe, result["user_text"], result["assistant_text"], robot_id, top_k=1)
                         closest_image_path_ini = await retrieve_image_safe(result["user_text"], result["assistant_text"], robot_id, top_k=1)
-                        # Adjust the path to be relative to the 'images' directory
-                        # closest_image_path = os.path.relpath(closest_image_path_ini, start='app/vector_db')
                         closest_image_path = closest_image_path_ini
                     except Exception as e:
                         log.error(f"[{robot_id}] retrieve_image failed: {e}", exc_info=True)
@@ -168,8 +137,6 @@ async def before_lecture(
                     log.info(f"[{robot_id}] Assistant text: {result['assistant_text']}")
                     try:
                         closest_image_path_ini = await retrieve_image_safe(result["user_text"], result["assistant_text"], robot_id, top_k=1)
-                        # Adjust the path to be relative to the 'images' directory
-                        # closest_image_path = os.path.relpath(closest_image_path_ini, start='app/vector_db')
                         closest_image_path = closest_image_path_ini
                     except Exception as e:
                         log.error(f"[{robot_id}] retrieve_image failed: {e}", exc_info=True)

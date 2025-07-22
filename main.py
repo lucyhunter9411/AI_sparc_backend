@@ -98,14 +98,6 @@ DB_TEXT_FAISS_PATH = "app/vector_db/vectorstore/text_faiss"
 EMBEDDING_MODEL    = "sentence-transformers/all-MiniLM-L6-v2"
 faiss_text_db = None      # will be initialised once in lifespan
 
-# # Azure Blob config
-# AZURE_CONNECTION_STRING = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
-# BLOB_CONTAINER_NAME = "pdf-images"
-
-# # Initialize Azure Blob client
-# blob_service_client = BlobServiceClient.from_connection_string(AZURE_CONNECTION_STRING)
-# container_client = blob_service_client.get_container_client(BLOB_CONTAINER_NAME)
-
 manager = ConnectionManager() 
 
 @asynccontextmanager
@@ -396,7 +388,6 @@ async def generate_and_send_ai_response(
     except Exception as e:
         logger.error(f"❌ Error inserting QnA: {e}")
 
-
 async def save_conv_into_db(user_text: str, assistant_text: str, db):
     """
     Save the conversation into the database.
@@ -455,11 +446,6 @@ async def update_qna(qna: QnA, db=Depends(get_db)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error updating QnA: {e}")
 
-
-class TTSRequest(BaseModel):
-    text: str
-    lang: str
-
 @app.post("/gtts/")
 async def gtts(request: Request):
     body = await request.json()
@@ -492,10 +478,6 @@ generateTextPrompt = """
     I don't need any statements, explanations, pronounciations and approaches.
     PLease give me transformed result.
 """
-
-@app.get("/promptGenerate/")
-async def promptUpdate():
-    return {"prompt" : generateTextPrompt}
 
 @app.post("/promptGenerate/")
 async def promptUpdata(prompt: str = Form(...)):
@@ -531,18 +513,6 @@ async def generateText(text: str = Form(...)):
     teluguData = model.predict(formatted_prompt_Telugu)
 
     return {"English": englishData, "Hindi": hindiData, "Telugu":teluguData}
-
-@app.post("/upload/")
-async def upload_image(image: UploadFile = File(...)):
-    try:
-        # Save the image to the server
-        image_path = os.path.join(UPLOAD_DIR, image.filename)
-        with open(image_path, "wb") as buffer:
-            shutil.copyfileobj(image.file, buffer)
-        return JSONResponse(content={"imageUrl": image.filename})
-    except Exception as e:
-        return JSONResponse(status_code=500, content={"message": str(e)})
-
         
 # Azure Blob settings
 CONTAINER_NAME = "dev"
