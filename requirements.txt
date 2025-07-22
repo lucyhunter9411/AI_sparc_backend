@@ -36,3 +36,5 @@ googletrans
 email-validator
 bcrypt
 passlib
+PyJWT
+python-jose
