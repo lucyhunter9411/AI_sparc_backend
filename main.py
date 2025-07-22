@@ -55,6 +55,8 @@ import asyncio
 from PIL import Image
 from Schema import DeviceList  # Add this import statement
 
+from app.auth.verify_token import verify_token
+
 
 from app.services.llm_service import (
     predict,                 # call the active model
@@ -863,7 +865,7 @@ async def create_vector_db_v1_endpoint(file_name: str = Form(...)):
 DB_METADATA_FAISS_PATH = os.getenv("DB_METADATA_FAISS_PATH")
 UPLOAD_FOLDER_FAISS = os.getenv("UPLOAD_FOLDER_FAISS")
 @app.get("/faiss/images/")
-async def get_images():
+async def get_images(user_id: str = Depends(verify_token)):
     if LOCAL_MODE:
         logger.info("LOCAL_MODE is true now!!!")
         metadata_path = "app/vector_db/vectorstore/image_faiss/image_faiss_metadata.json"
@@ -921,7 +923,7 @@ async def image_description_update(
 
 
 @app.post("/upload/file/")
-async def upload_file(file: UploadFile = File(...)):
+async def upload_file(file: UploadFile = File(...),  user_id: str = Depends(verify_token)):
     if file is None:
         raise HTTPException(status_code=422, detail="No file provided.")
 
