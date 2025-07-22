@@ -15,7 +15,7 @@ from app.api.deps import get_db
 
 # --- services ---------------------------------------------------------------                   # conversation history
 from app.services.vision_service import  handle_vision_data
-from app.services.shared_data import set_connected_audio_clients, set_audio_source, get_audio_source
+from app.services.shared_data import set_connected_audio_clients, set_audio_source, get_audio_source, get_saveConv
 from app.services.audio_chat_pipeline import pipeline
 import os
 # ---------------------------------------------------------------------------
@@ -39,6 +39,7 @@ async def before_lecture(
     """
     Main handler for the before-lecture channel.
     """
+    from main import save_conv_into_db
     await mgr.connect(robot_id, ws)
     vision_task = asyncio.create_task(handle_vision_data("st_waiting", robot_id, ws))
 
@@ -74,6 +75,11 @@ async def before_lecture(
             if msg.type == "speech":
                 audio_source = get_audio_source(robot_id)
                 result = await pipeline(robot_id, msg, audio_source)
+                save_conv_flag = get_saveConv(robot_id)
+
+                if save_conv_flag != "unsave":
+                    await save_conv_into_db(result["user_text"], result["assistant_text"], db)
+                    log.info(f"[{robot_id}]'s conversation is saved in the database successfully!")
 
                 # Send user's transcribed text
                 if audio_source == "frontend":
