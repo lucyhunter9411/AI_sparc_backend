@@ -396,6 +396,25 @@ async def generate_and_send_ai_response(
     except Exception as e:
         logger.error(f"❌ Error inserting QnA: {e}")
 
+
+async def save_conv_into_db(user_text: str, assistant_text: str, db):
+    """
+    Save the conversation into the database.
+    """
+    conversation_data = {
+        "question" : user_text,
+        "answer" : assistant_text,
+        "model" : selectedModelName,
+        "prompt" : custom_prompt_template
+    }
+    try:
+        # Insert QnA document into the collection
+        qna_document = QnA(**conversation_data)  # Convert to Pydantic model
+        db.qna.insert_one(qna_document.dict(exclude_unset=True))  # Insert into MongoDB
+        logger.info(f"Conversation saved successfully.")
+    except Exception as e:
+        logger.error(f"❌ Error saving conversation: {e}")
+
 @app.get("/prompt/")
 async def promptUpdate(db=Depends(get_db)):
     latest_prompt = db.prompt.find_one(sort=[("_id", -1)])
