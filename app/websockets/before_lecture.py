@@ -56,6 +56,21 @@ load_dotenv(dotenv_path=Path(__file__).parent / ".env", override=True)
 router = APIRouter()
 log = logging.getLogger(__name__)
 
+def chunk_audio(audio_data, chunk_size):
+    """Split audio data into chunks with sequence numbers and total count."""
+    total_chunks = (len(audio_data) + chunk_size - 1) // chunk_size
+    chunks = []
+    for i in range(total_chunks):
+        start = i * chunk_size
+        end = start + chunk_size
+        chunk = audio_data[start:end]
+        chunks.append({
+            "sequence_number": i,
+            "total_chunks": total_chunks,
+            "data": list(chunk)
+        })
+    return chunks
+
 # ───────────────────────── websocket entrypoint ─────────────────────────────
 @router.websocket("/ws/{robot_id}/before/lecture")
 async def before_lecture(
@@ -177,16 +192,29 @@ async def before_lecture(
                         "image_path": closest_image_path
                     }
                     await mgr.send_role(robot_id, "frontend", out_msg)
+
+                    audio_chunks = chunk_audio(result["wav_bytes"], 1024)
+
+                    # Send each chunk with its metadata
+                    for chunk in audio_chunks:
+                        out_msg = {
+                            "robot_id": robot_id,
+                            "type": "model",
+                            "text": result["assistant_text"],
+                            "audio_chunk": chunk,  # Send each chunk with its metadata
+                            "ts": time.time(),
+                        }
+                        await mgr.send_role(robot_id, "audio", out_msg)
                     
-                    # Send assistant's response
-                    out_msg = {
-                        "robot_id": robot_id,
-                        "type": "model",
-                        "text": result["assistant_text"],
-                        "audio": list(result["wav_bytes"]),
-                        "ts": time.time(),
-                    }
-                    await mgr.send_role(robot_id, "audio", out_msg)
+                    # # Send assistant's response
+                    # out_msg = {
+                    #     "robot_id": robot_id,
+                    #     "type": "model",
+                    #     "text": result["assistant_text"],
+                    #     "audio": list(result["wav_bytes"]),
+                    #     "ts": time.time(),
+                    # }
+                    # await mgr.send_role(robot_id, "audio", out_msg)
                     
                 continue
 
