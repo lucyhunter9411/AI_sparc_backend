@@ -3,7 +3,7 @@ from pathlib import Path
 # explicitly point at your .env
 load_dotenv(dotenv_path=Path(__file__).parent / ".env", override=True)
 
-from fastapi import FastAPI, HTTPException, Form, WebSocket, WebSocketDisconnect, UploadFile, File, Request, Depends
+from fastapi import FastAPI, HTTPException, Form, WebSocket, WebSocketDisconnect, UploadFile, File, Request, Depends, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse
@@ -37,6 +37,10 @@ from app.vector_db.vectorDB_generation import process_pdf_and_create_or_update_v
 from app.vector_db.vectorDB_image_decription_update import update_image_embedding_on_blob
 
 from app.services.tv_interface import sign_in
+from app.schemas.auth import LoginRequest, RegisterRequest
+from app.auth.login import login_user
+from app.auth.register import register_user
+from app.core.database import mongo_db
 
 import subprocess
 import sys
@@ -963,6 +967,17 @@ async def handle_login_request():
         return {"message": "Login successful", "data": auth_response}
     except HTTPException as e:
         return {"message": "Login failed", "detail": str(e)}
+
+@app.post("/auth/login/")
+async def login_endpoint(login_data: LoginRequest, db=Depends(mongo_db)):
+    return await login_user(login_data, db)
+
+@app.post("/auth/register/")
+async def register_endpoint(register_data: RegisterRequest,  db=Depends(mongo_db)):
+    """
+    Endpoint for user registration.
+    """
+    return await register_user(register_data, db)
 
 method = "Whisper"
 @app.post("/sttMethod/")
