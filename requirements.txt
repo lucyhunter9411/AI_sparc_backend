@@ -33,3 +33,6 @@ requests
 azure-storage-blob
 langchain-huggingface
 googletrans
+email-validator
+bcrypt
+passlib

@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, EmailStr, SecretStr
 from typing import List, Optional
 from bson import ObjectId
 
@@ -16,6 +16,11 @@ class PyObjectId(str):
         if isinstance(v, str) and ObjectId.is_valid(v):
             return v  # Keep valid ObjectId strings
         raise ValueError("Invalid ObjectId")
+
+    @classmethod
+    def __get_pydantic_json_schema__(cls, core_schema, handler):
+        # This tells Pydantic to treat this as a string in OpenAPI/JSON schema
+        return {"type": "string"}
 
 # Chapter Schema
 class Chapter(BaseModel):
@@ -101,6 +106,18 @@ class Devices(BaseModel):
     id: Optional[PyObjectId] = Field(alias="_id", default=None)
     robot_id: str = Field(...)
     device: List[DeviceList]
+    class Config:
+        json_encoders = {ObjectId: str}
+        orm_mode = True
+
+class Auth(BaseModel):
+    """
+    Authentication model for user credentials.
+    """
+    id: Optional[PyObjectId] = Field(default=None, alias="_id", description="MongoDB ObjectId")
+    email: EmailStr = Field(..., description="User email address")
+    password: SecretStr = Field(..., description="User password (hashed)")
+
     class Config:
         json_encoders = {ObjectId: str}
         orm_mode = True
