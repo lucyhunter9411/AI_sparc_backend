@@ -98,6 +98,14 @@ DB_TEXT_FAISS_PATH = "app/vector_db/vectorstore/text_faiss"
 EMBEDDING_MODEL    = "sentence-transformers/all-MiniLM-L6-v2"
 faiss_text_db = None      # will be initialised once in lifespan
 
+# # Azure Blob config
+# AZURE_CONNECTION_STRING = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
+# BLOB_CONTAINER_NAME = "pdf-images"
+
+# # Initialize Azure Blob client
+# blob_service_client = BlobServiceClient.from_connection_string(AZURE_CONNECTION_STRING)
+# container_client = blob_service_client.get_container_client(BLOB_CONTAINER_NAME)
+
 manager = ConnectionManager() 
 
 @asynccontextmanager
@@ -388,6 +396,7 @@ async def generate_and_send_ai_response(
     except Exception as e:
         logger.error(f"❌ Error inserting QnA: {e}")
 
+
 async def save_conv_into_db(user_text: str, assistant_text: str, db):
     """
     Save the conversation into the database.
@@ -446,6 +455,11 @@ async def update_qna(qna: QnA, db=Depends(get_db)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error updating QnA: {e}")
 
+
+class TTSRequest(BaseModel):
+    text: str
+    lang: str
+
 @app.post("/gtts/")
 async def gtts(request: Request):
     body = await request.json()
@@ -478,6 +492,10 @@ generateTextPrompt = """
     I don't need any statements, explanations, pronounciations and approaches.
     PLease give me transformed result.
 """
+
+@app.get("/promptGenerate/")
+async def promptUpdate():
+    return {"prompt" : generateTextPrompt}
 
 @app.post("/promptGenerate/")
 async def promptUpdata(prompt: str = Form(...)):
@@ -513,6 +531,18 @@ async def generateText(text: str = Form(...)):
     teluguData = model.predict(formatted_prompt_Telugu)
 
     return {"English": englishData, "Hindi": hindiData, "Telugu":teluguData}
+
+@app.post("/upload/")
+async def upload_image(image: UploadFile = File(...)):
+    try:
+        # Save the image to the server
+        image_path = os.path.join(UPLOAD_DIR, image.filename)
+        with open(image_path, "wb") as buffer:
+            shutil.copyfileobj(image.file, buffer)
+        return JSONResponse(content={"imageUrl": image.filename})
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"message": str(e)})
+
         
 # Azure Blob settings
 CONTAINER_NAME = "dev"
@@ -854,7 +884,7 @@ async def create_vector_db_v1_endpoint(file_name: str = Form(...)):
 DB_METADATA_FAISS_PATH = os.getenv("DB_METADATA_FAISS_PATH")
 UPLOAD_FOLDER_FAISS = os.getenv("UPLOAD_FOLDER_FAISS")
 @app.get("/faiss/images/")
-async def get_images(user_id: str = Depends(verify_token)):
+async def get_images():
     if LOCAL_MODE:
         logger.info("LOCAL_MODE is true now!!!")
         metadata_path = "app/vector_db/vectorstore/image_faiss/image_faiss_metadata.json"
@@ -912,7 +942,7 @@ async def image_description_update(
 
 
 @app.post("/upload/file/")
-async def upload_file(file: UploadFile = File(...),  user_id: str = Depends(verify_token)):
+async def upload_file(file: UploadFile = File(...)):
     if file is None:
         raise HTTPException(status_code=422, detail="No file provided.")
 
@@ -969,6 +999,22 @@ async def register_endpoint(register_data: RegisterRequest,  db=Depends(mongo_db
     Endpoint for user registration.
     """
     return await register_user(register_data, db)
+
+@app.get("/test/verify-token/", tags=["test"])
+async def test_verify_token(user_id: str = Depends(verify_token), db=Depends(get_db)):
+    """
+    Test endpoint for verifying tokens and retrieving user email.
+    """
+    print(user_id)
+    try:
+        # Fetch the user's email from the database using the user_id
+        user = db.auths.find_one({"_id": ObjectId(user_id)})
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        return {"message": "Token is valid", "user_id": user_id, "email": user.get("email")}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error retrieving user email: {str(e)}")
 
 method = "Whisper"
 @app.post("/sttMethod/")
