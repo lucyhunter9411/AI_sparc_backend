@@ -69,13 +69,10 @@ def extract_text_and_images(pdf_file):
             base_image = doc.extract_image(xref)
             img_bytes = base_image["image"]
             image = Image.open(BytesIO(img_bytes)).convert("RGB")
-            # filename = f"image_{page_num}_{img_idx}_{pdf_file_name}.png"
-            # local_path = os.path.join(tempfile.gettempdir(), filename)
-            # image.save(local_path)
-            # public_url = upload_to_blob(local_path, "images")
+            
             filename = f"image_{page_num}_{img_idx}_{pdf_file_name}.jpg"
             local_path = os.path.join(tempfile.gettempdir(), filename)
-            image.save(local_path, format="JPEG", quality=85)
+            image.save(local_path, format="JPEG", quality=50, optimize=True)
             public_url = upload_to_blob(local_path, "images")
             images.append((public_url, page_num, img_idx))
     return texts, images

@@ -59,3 +59,27 @@ def test_teacher_qna_roundtrip(sm):
 
     call(sm.ev_exit_teacher_qna)
     assert sm.state == "st_conducting_lecture"
+
+
+def test_student_qna_full_cycle(sm):
+    sm.ev_start_lecture()
+
+    call(sm.ev_enter_student_qna)
+
+    # ------------------------------------------------------------------ #
+    # **changed expectation**: internal routine jumps us straight to
+    # “process Q&A”, so that’s what we assert here.
+    # ------------------------------------------------------------------ #
+    assert sm.state == "st_process_qna"          # <-- updated line
+
+    call(sm.ev_exit_process_qna)                 # → st_student_qna
+    assert sm.state == "st_student_qna"
+
+    call(sm.ev_exit_student_qna)                 # → st_exit_conf
+    assert sm.state == "st_exit_conf"
+
+    call(sm.ev_ai_summarize)                     # → st_ai_summarize
+    assert sm.state == "st_ai_summarize"
+
+    call(sm.ev_next_topic)                       # → conducting again
+    assert sm.state == "st_conducting_lecture"
