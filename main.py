@@ -615,7 +615,7 @@ async def upload_lesson_image_from_url(image_url: str = Form(...)):
 
     try:
         # ✅ Always use fresh container_client with correct container name
-        container_client = blob_service_client.get_container_client(CONTAINER_NAME)
+        dest_container_client = blob_service_client.get_container_client(CONTAINER_NAME)
         # Parse blob name from full URL
         prefix = f"https://{blob_service_client.account_name}.blob.core.windows.net/{BLOB_CONTAINER_NAME}/"
         if not image_url.startswith(prefix):
@@ -636,7 +636,7 @@ async def upload_lesson_image_from_url(image_url: str = Form(...)):
         # Generate new filename
         new_filename = f"{uuid.uuid4().hex}.jpg"
         dest_blob_path = f"{BLOB_FOLDER}/{new_filename}"
-        dest_blob_client = container_client.get_blob_client(dest_blob_path)
+        dest_blob_client = dest_container_client.get_blob_client(dest_blob_path)
 
         # Upload converted image as JPEG
         dest_blob_client.upload_blob(
