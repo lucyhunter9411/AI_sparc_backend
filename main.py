@@ -566,13 +566,15 @@ async def upload_lesson_image(image: UploadFile = File(...)):
             return JSONResponse(status_code=500, content={"message": str(e)})
 
     try:
+        # ✅ Always use fresh container_client with correct container name
+        container_client = blob_service_client.get_container_client(CONTAINER_NAME)
         # Generate a unique filename
         ext = os.path.splitext(image.filename)[1]
         unique_filename = f"{uuid.uuid4().hex}{ext}"
         blob_path = f"{BLOB_FOLDER}/{unique_filename}"
 
         # Upload the image to Azure Blob Storage
-        blob_client = container_client.get_blob_client(blob_path)
+        blob_client = container_client.get_blob_client(blob=blob_path)
         content_settings = ContentSettings(content_type=image.content_type)
         blob_client.upload_blob(image.file, overwrite=True, content_settings=content_settings)
 
@@ -612,13 +614,15 @@ async def upload_lesson_image_from_url(image_url: str = Form(...)):
             return JSONResponse(status_code=500, content={"message": str(e)})
 
     try:
+        # ✅ Always use fresh container_client with correct container name
+        container_client = blob_service_client.get_container_client(CONTAINER_NAME)
         # Parse blob name from full URL
         prefix = f"https://{blob_service_client.account_name}.blob.core.windows.net/{BLOB_CONTAINER_NAME}/"
         if not image_url.startswith(prefix):
             raise HTTPException(status_code=400, detail="Invalid Azure blob URL")
 
         source_blob_path = image_url.replace(prefix, "")
-        source_blob_client = container_client.get_blob_client(source_blob_path)
+        source_blob_client = container_client.get_blob_client(blob=source_blob_path)
 
         # Download image as bytes
         blob_data = source_blob_client.download_blob().readall()
