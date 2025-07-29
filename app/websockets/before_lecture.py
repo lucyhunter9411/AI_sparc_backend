@@ -186,6 +186,10 @@ async def before_lecture(
                     
                 elif audio_source == "speech":
                     await mgr.send_role(robot_id, "speech", result["in_msg"])
+                    
+                    # Initialize image path as None in case image processing fails
+                    closest_image_path = None
+                    
                     # Create a task to run image_retrieve_based_answer independently
                     log.info(f"[{robot_id}] Starting retrieve_image call for speech source")
                     log.info(f"[{robot_id}] User text: {result['user_text']}")
@@ -195,10 +199,11 @@ async def before_lecture(
                         # Adjust the path to be relative to the 'images' directory
                         # closest_image_path = os.path.relpath(closest_image_path_ini, start='app/vector_db')
                         closest_image_path = closest_image_path_ini
+                        log.info(f"[{robot_id}] retrieve_image completed successfully: {closest_image_path}")
                     except Exception as e:
                         log.error(f"[{robot_id}] retrieve_image failed: {e}", exc_info=True)
                         closest_image_path = None
-                    log.info(f"[{robot_id}] retrieve_image completed successfully: {closest_image_path}")
+                        log.info(f"[{robot_id}] Continuing without image due to retrieval failure")
                     
                     # Make send_image_to_devices non-blocking so it doesn't prevent audio response
                     try:
@@ -207,7 +212,7 @@ async def before_lecture(
                         log.error(f"[{robot_id}] send_image_to_devices failed: {e}", exc_info=True)
                         # Continue execution even if image sending fails
 
-                    # Send assistant's response
+                    # Send assistant's response to frontend (with or without image)
                     out_msg = {
                         "robot_id": robot_id,
                         "type": "model",
@@ -217,17 +222,10 @@ async def before_lecture(
                     }
                     await mgr.send_role(robot_id, "frontend", out_msg)
                     
-                    # # Send assistant's response
-                    # out_msg = {
-                    #     "robot_id": robot_id,
-                    #     "type": "model",
-                    #     "text": result["assistant_text"],
-                    #     "audio": list(result["wav_bytes"]),
-                    #     "ts": time.time(),
-                    # }
-                    # await mgr.send_role(robot_id, "audio", out_msg)
-
+                    # CRITICAL: Send audio to audio clients regardless of image processing success/failure
+                    log.info(f"[{robot_id}] 🔊 Starting audio sending to audio clients")
                     audio_chunks = chunk_audio(result["wav_bytes"], CHUNK_SIZE)
+                    log.info(f"[{robot_id}] 🔊 Sending {len(audio_chunks)} audio chunks to audio clients")
                     
                     # Send each chunk with its metadata
                     for chunk in audio_chunks:
@@ -239,6 +237,8 @@ async def before_lecture(
                             "ts": time.time(),
                         }
                         await mgr.send_role(robot_id, "audio", out_msg)
+                    
+                    log.info(f"[{robot_id}] ✅ Audio chunks sent to audio clients successfully")
                     
                 continue
 
