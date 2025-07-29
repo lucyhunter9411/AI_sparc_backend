@@ -121,3 +121,13 @@ class Auth(BaseModel):
     class Config:
         json_encoders = {ObjectId: str}
         orm_mode = True
+
+class UserData(BaseModel):
+    id: Optional[PyObjectId] = Field(alias="_id", default=None)
+    user_email: str = Field(...)
+    selected_room_id: str = Field(...)
+    selected_language : str = Field(...)
+    show_conv_state : str = Field(...)
+    class Config:
+        json_encoders = {ObjectId: str}
+        orm_mode = True
