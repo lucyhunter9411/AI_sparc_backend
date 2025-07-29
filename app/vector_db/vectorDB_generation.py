@@ -28,7 +28,7 @@ container_client = blob_service_client.get_container_client(BLOB_CONTAINER_NAME)
 
 def upload_to_blob(local_path, blob_subdir):
     blob_name = f"{blob_subdir}/{os.path.basename(local_path)}"
-    content_settings = ContentSettings(content_type="application/octet-stream")
+    content_settings = ContentSettings(content_type="image/jpeg")  # ← Changed from "application/octet-stream"
     with open(local_path, "rb") as data:
         container_client.upload_blob(name=blob_name, data=data, overwrite=True, content_settings=content_settings)
     blob_url = f"https://{blob_service_client.account_name}.blob.core.windows.net/{BLOB_CONTAINER_NAME}/{blob_name}"
