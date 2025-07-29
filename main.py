@@ -1009,7 +1009,6 @@ async def test_verify_token(user_id: str = Depends(verify_token), db=Depends(get
     """
     Test endpoint for verifying tokens and retrieving user email.
     """
-    print(user_id)
     try:
         # Fetch the user's email from the database using the user_id
         user = db.auths.find_one({"_id": ObjectId(user_id)})
@@ -1019,6 +1018,50 @@ async def test_verify_token(user_id: str = Depends(verify_token), db=Depends(get
         return {"message": "Token is valid", "user_id": user_id, "email": user.get("email")}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error retrieving user email: {str(e)}")
+
+@app.post("/add_or_update/user/data/")
+async def save_user_data(
+    user_id: str = Depends(verify_token),
+    db=Depends(get_db),
+    selected_room_id: str = Form(...),
+    selected_language: str = Form(...),
+    show_conv_state: str = Form(...),
+    ):
+    try:
+        # Fetch the user's email from the database using the user_id
+        user = db.auths.find_one({"_id": ObjectId(user_id)})
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        user_email = user.get("email")
+
+        # Check if the user data already exists
+        existing_user_data = db.user_data.find_one({"user_email": user_email})
+
+        if existing_user_data:
+            # Update the existing user data
+            db.user_data.update_one(
+                {"user_email": user_email},
+                {"$set": {
+                    "selected_room_id": selected_room_id,
+                    "selected_language": selected_language,
+                    "show_conv_state": show_conv_state
+                }}
+            )
+            return {"message": "User data updated successfully", "user_id": user_id, "email": user_email}
+        else:
+            # Add new user data
+            new_user_data = {
+                "user_email": user_email,
+                "selected_room_id": selected_room_id,
+                "selected_language": selected_language,
+                "show_conv_state": show_conv_state
+            }
+            db.user_data.insert_one(new_user_data)
+            return {"message": "User data added successfully", "user_id": user_id, "email": user_email}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error processing user data: {str(e)}")
 
 method = "Whisper"
 @app.post("/sttMethod/")
