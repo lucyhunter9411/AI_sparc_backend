@@ -361,10 +361,12 @@ class LectureStateMachine:
             logger.warning(f"WebSocket is not connected. Skipping message send. Error: {e}")
 
         extract_image = data.get("image")
-        lesson_image = 'images/' + extract_image
+        # lesson_image = 'images/' + extract_image
+        lesson_image = extract_image
 
-        base_url = os.getenv("base_url")
-        image_path_to_TV = base_url + lesson_image.replace("\\", "/")
+        # base_url = os.getenv("base_url")
+        # image_path_to_TV = base_url + lesson_image.replace("\\", "/")
+        image_path_to_TV = lesson_image.replace("\\", "/")
         
         await send_image_to_devices(connectrobot, db, image_path_to_TV, logger)
 
