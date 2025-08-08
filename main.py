@@ -22,7 +22,6 @@ from pydantic import BaseModel
 from Schema import QnA, Topic
 from bson import ObjectId
 import wave
-from bson import ObjectId
 from app.api.deps import get_db
 from app.utils.audio import generate_audio_stream
 import app.services.llm as llm
@@ -32,8 +31,6 @@ from app.websockets.connection_manager import ConnectionManager
 from app.websockets.lecture import router as lecture_router
 from app.websockets.before_lecture import router as before_lecture_router
 from app.api.classrooms import router as classrooms_router
-from app.vector_db.vectorDB_generation_ini import create_vector_db  
-from app.vector_db.vectorDB_generation import process_pdf_and_create_or_update_vector_db
 from app.vector_db.vectorDB_image_decription_update import update_image_embedding_on_blob
 
 from app.services.tv_interface import sign_in
@@ -45,6 +42,7 @@ from app.core.database import mongo_db
 import subprocess
 import sys
 import requests
+import tempfile
 import uuid
 
 # --- add just above the FastAPI() call --------------
@@ -53,7 +51,6 @@ from langchain_community.vectorstores import FAISS
 from langchain_community.embeddings import HuggingFaceEmbeddings
 import asyncio
 from PIL import Image
-from Schema import DeviceList  # Add this import statement
 
 from app.auth.verify_token import verify_token
 
@@ -73,6 +70,29 @@ logger = logging.getLogger(__name__)  # module-specific logger
 
 TESTING: bool = os.getenv("TESTING", "0") == "1"  # added for pytest
 LOCAL_MODE = os.getenv("LOCAL_MODE", "0").lower() in ("1", "true", "yes")
+CHUNK_SIZE = os.getenv("CHUNK_SIZE")
+
+# Convert CHUNK_SIZE to an integer, with a default value if not set or invalid
+try:
+    CHUNK_SIZE = int(CHUNK_SIZE)
+except (TypeError, ValueError):
+    # Set a default value if CHUNK_SIZE is not set or is not a valid integer
+    CHUNK_SIZE = 2097152  # Example default value, adjust as needed - 2MB
+    
+def chunk_audio(audio_data, chunk_size):
+    """Split audio data into chunks with sequence numbers and total count."""
+    total_chunks = (len(audio_data) + chunk_size - 1) // chunk_size
+    chunks = []
+    for i in range(total_chunks):
+        start = i * chunk_size
+        end = start + chunk_size
+        chunk = audio_data[start:end]
+        chunks.append({
+            "sequence_number": i,
+            "total_chunks": total_chunks,
+            "data": list(chunk)
+        })
+    return chunks
 
 if not LOCAL_MODE:
     from azure.storage.blob import BlobServiceClient, ContentSettings
@@ -94,17 +114,11 @@ from app.core.database import mongo_db
 # make sure this is at module scope, before your @app.on_event
 custom_prompt_template = ""
 
-DB_TEXT_FAISS_PATH = "app/vector_db/vectorstore/text_faiss"
-EMBEDDING_MODEL    = "sentence-transformers/all-MiniLM-L6-v2"
+DB_TEXT_FAISS_PATH_local = "app/vector_db/vectorstore/text_faiss"
+DB_TEXT_FAISS_PATH = os.getenv("DB_TEXT_FAISS_PATH")
+# EMBEDDING_MODEL    = os.getenv("EMBEDDING_MODEL")
+EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 faiss_text_db = None      # will be initialised once in lifespan
-
-# # Azure Blob config
-# AZURE_CONNECTION_STRING = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
-# BLOB_CONTAINER_NAME = "pdf-images"
-
-# # Initialize Azure Blob client
-# blob_service_client = BlobServiceClient.from_connection_string(AZURE_CONNECTION_STRING)
-# container_client = blob_service_client.get_container_client(BLOB_CONTAINER_NAME)
 
 manager = ConnectionManager() 
 
@@ -138,13 +152,48 @@ async def lifespan(app: FastAPI):
                 logger.info("✅ Loaded custom prompt template on startup.")
             else:
                 logger.info("ℹ️  No custom prompt found in the database.")
-
-        faiss_text_db = FAISS.load_local(
-            DB_TEXT_FAISS_PATH,
-            HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL),
-            allow_dangerous_deserialization=True,
-        )
-        logger.info("✅ FAISS text index ready (%s).", DB_TEXT_FAISS_PATH)
+        if not LOCAL_MODE:
+            temp_dir = tempfile.gettempdir()
+            local_faiss_dir = os.path.join(temp_dir, "text_faiss_temp")
+            os.makedirs(local_faiss_dir, exist_ok=True)
+            
+            try:
+                # Download index.faiss
+                faiss_url = f"{DB_TEXT_FAISS_PATH}/index.faiss"
+                logger.info(f"Downloading text FAISS index from: {faiss_url}")
+                response = requests.get(faiss_url)
+                response.raise_for_status()
+                with open(os.path.join(local_faiss_dir, "index.faiss"), "wb") as f:
+                    f.write(response.content)
+                logger.info("Text FAISS index downloaded successfully")
+                
+                # Download index.pkl
+                pkl_url = f"{DB_TEXT_FAISS_PATH}/index.pkl"
+                logger.info(f"Downloading text FAISS pkl from: {pkl_url}")
+                response = requests.get(pkl_url)
+                response.raise_for_status()
+                with open(os.path.join(local_faiss_dir, "index.pkl"), "wb") as f:
+                    f.write(response.content)
+                logger.info("Text FAISS pkl downloaded successfully")
+                
+                # Now load from the downloaded local files
+                faiss_text_db = FAISS.load_local(
+                    local_faiss_dir,
+                    HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL),
+                    allow_dangerous_deserialization=True,
+                )
+                logger.info("✅ FAISS text index ready (downloaded from %s).", DB_TEXT_FAISS_PATH)
+                
+            except Exception as e:
+                logger.error(f"❌ Failed to download or load text FAISS from Azure: {e}")
+                faiss_text_db = None
+        else:
+            faiss_text_db = FAISS.load_local(
+                DB_TEXT_FAISS_PATH_local,
+                HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL),
+                allow_dangerous_deserialization=True,
+            )
+            logger.info("✅ FAISS text index ready (%s).", DB_TEXT_FAISS_PATH_local)
         if faiss_text_db is None:
                 logger.error("❌ FAISS text index is None after loading.")
         else:
@@ -343,7 +392,11 @@ async def generate_and_send_ai_response(
         websocket: WebSocket, 
         lecture_state: Dict, 
         retrieve_data: str, 
-        remaining_time: int, db=Depends(get_db)):
+        remaining_time: int,
+        is_websocket_alive,
+        robot_id,
+        # db=Depends(get_db)
+    ):
     start = time.time()
     selected_language = lecture_state.get("selectedLanguageName", "English")
     if remaining_time == 0:
@@ -374,13 +427,65 @@ async def generate_and_send_ai_response(
     # model = llm.llm_models[selectedModelName]
     result = await predict(formatted_prompt)
     
-    textTime = time.time()
-    # logger.info("Text Generation Time:", int(textTime - start))
     audio_stream = generate_audio_stream(result, selected_language)
     audio_stream.seek(0)
-    audio_base64 = base64.b64encode(audio_stream.read()).decode("utf-8")
     
-    await websocket.send_text(json.dumps({"text": result, "audio": audio_base64, "type": "model"}))
+    # audio_base64 = base64.b64encode(audio_stream.read()).decode("utf-8")
+    # await websocket.send_text(json.dumps({"text": result, "audio": audio_base64, "type": "model"}))
+
+    audio_bytes = audio_stream.read()  # Read the audio as bytes
+    
+    # Check if websocket is alive and send via audio websocket endpoint
+    if is_websocket_alive:
+        # Import the global variables from lecture module
+        from app.websockets.lecture import data_to_audio, lecture_to_audio
+        
+        # Create multi-language data structure like the websocket expects
+        language_text_data = {}
+        if selected_language == "English":
+            language_text_data["EnglishText"] = result
+        elif selected_language == "Hindi":
+            language_text_data["HindiText"] = result
+        elif selected_language == "Telugu":
+            language_text_data["TeluguText"] = result
+        else:
+            # Default to English if unknown language
+            language_text_data["EnglishText"] = result
+        
+        # Set the data for the audio websocket to pick up
+        data_to_audio[robot_id] = {
+            "data": language_text_data
+        }
+        
+        # Only update the selectedLanguageName, don't overwrite the entire structure
+        if robot_id not in lecture_to_audio:
+            lecture_to_audio[robot_id] = {}
+        lecture_to_audio[robot_id]["selectedLanguageName"] = selected_language
+        
+        
+        logger.info(f"[{robot_id}] Audio data sent to websocket audio endpoint")
+        await websocket.send_text(json.dumps({"text": result, "type": "model"}))
+    else:
+        # Fallback to original method - send via regular websocket
+        audio_chunks = chunk_audio(audio_bytes, CHUNK_SIZE)
+        for i, chunk in enumerate(audio_chunks):
+            chunk_message = {
+                "text": result if i == 0 else "",
+                "audio_chunk": chunk,  # Send each chunk with its metadata
+                "type": "model",
+                "ts": time.time()
+            }
+            await websocket.send_text(json.dumps(chunk_message))
+
+    # audio_chunks = chunk_audio(audio_bytes, CHUNK_SIZE)
+    # for i, chunk in enumerate(audio_chunks):
+    #     chunk_message = {
+    #         "text": result if i == 0 else "",
+    #         "audio_chunk": chunk,  # Send each chunk with its metadata
+    #         "type": "model",
+    #         "ts": time.time()
+    #     }
+    #     await websocket.send_text(json.dumps(chunk_message))
 
     quesAndAnswer = {
         "question" : "automatic-generation",
@@ -389,12 +494,15 @@ async def generate_and_send_ai_response(
         "prompt" : prompt_for_question_time
     }
 
-    try:
-        # Insert QnA document into the collection
-        qna_document = QnA(**quesAndAnswer)  # Convert to Pydantic model
-        db.qna.insert_one(qna_document.dict(exclude_unset=True))  # Insert into MongoDB
-    except Exception as e:
-        logger.error(f"❌ Error inserting QnA: {e}")
+    # Create database connection directly
+    from app.core.database import mongo_db
+    async with mongo_db() as db:
+        try:
+            # Insert QnA document into the collection
+            qna_document = QnA(**quesAndAnswer)  # Convert to Pydantic model
+            db.qna.insert_one(qna_document.dict(exclude_unset=True))  # Insert into MongoDB
+        except Exception as e:
+            logger.error(f"❌ Error inserting QnA: {e}")
 
 
 async def save_conv_into_db(user_text: str, assistant_text: str, db):
@@ -845,24 +953,9 @@ async def deleteLecture(lectureID: str = Form(...), db=Depends(get_db)):
 
 # Define the absolute path for uploads
 UPLOAD_FOLDER_FAISS = os.getenv("UPLOAD_FOLDER_FAISS", "uploads")
-IMAGE_DIR = os.getenv("IMAGE_DIR", "app/vector_db/images")
+IMAGE_DIR = os.getenv("IMAGE_DIR", "app/vector_db/vectorstore/images")
 if not LOCAL_MODE:
     os.makedirs(UPLOAD_FOLDER_FAISS, exist_ok=True)
-    
-@app.post("/create-vector-db/v0/")
-async def create_vector_db_v0_endpoint(file_name: str = Form(...)):
-    try:
-        file_location = os.path.join(UPLOAD_FOLDER_FAISS, file_name)
-
-        # Run with the current Python interpreter path
-        subprocess.Popen([sys.executable, "app/vector_db/vectorDB_generation_ini.py", file_location])
-
-        return {
-            "status": "processing",
-            "message": f"Embedding for '{file_name}' has started in background."
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/create-vector-db/v1/")
 async def create_vector_db_v1_endpoint(file_name: str = Form(...)):
@@ -871,16 +964,24 @@ async def create_vector_db_v1_endpoint(file_name: str = Form(...)):
             logger.info("LOCAL_MODE is true now!!!")
             file_location = os.path.join("uploads/pdf_file", file_name)
 
+            # Run with the current Python interpreter path
+            subprocess.Popen([sys.executable, "app/vector_db/vectorDB_generation_local.py", file_location])
+
+            return {
+                "status": "processing",
+                "message": f"Embedding for '{file_name}' has started in background."
+            }
+
         else:
             file_location = os.path.join(UPLOAD_FOLDER_FAISS, file_name)
 
-        # Run with the current Python interpreter path
-        subprocess.Popen([sys.executable, "app/vector_db/vectorDB_generation.py", file_location])
+            # Run with the current Python interpreter path
+            subprocess.Popen([sys.executable, "app/vector_db/vectorDB_generation.py", file_location])
 
-        return {
-            "status": "processing",
-            "message": f"Embedding for '{file_name}' has started in background."
-        }
+            return {
+                "status": "processing",
+                "message": f"Embedding for '{file_name}' has started in background."
+            }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     
