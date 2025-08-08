@@ -11,6 +11,9 @@ from PIL import Image
 from datetime import datetime
 from transformers import CLIPProcessor, CLIPModel, BlipProcessor, BlipForConditionalGeneration
 from sentence_transformers import SentenceTransformer
+from langchain_community.vectorstores import FAISS
+from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain.docstore.document import Document
 from azure.storage.blob import BlobServiceClient, ContentSettings
 import requests
 import tempfile
@@ -20,6 +23,10 @@ logging.basicConfig(level=logging.INFO)
 
 # Azure Blob configuration
 AZURE_CONNECTION_STRING = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
+# EMBEDDING_MODEL    = os.getenv("EMBEDDING_MODEL")
+EMBEDDING_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
+EMBEDDING_MODEL = HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL_NAME)
+SENTENCE_TRANSFORMER_MODEL = SentenceTransformer("all-MiniLM-L6-v2")  # Keep for other uses
 BLOB_CONTAINER_NAME = "pdf-images"
 
 # Azure Blob client
@@ -37,7 +44,7 @@ def upload_to_blob(local_path, blob_subdir):
 # Load models
 clip_model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32")
 clip_processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
-text_model = SentenceTransformer('all-MiniLM-L6-v2')
+text_model = SENTENCE_TRANSFORMER_MODEL  # Use SentenceTransformer for direct embedding generation
 blip_model = BlipForConditionalGeneration.from_pretrained("Salesforce/blip-image-captioning-base")
 blip_processor = BlipProcessor.from_pretrained("Salesforce/blip-image-captioning-base")
 
@@ -87,30 +94,45 @@ def generate_image_description(path):
     torch.cuda.empty_cache()
     return desc
 
-def generate_text_embeddings(texts, batch_size=16):
-    embeddings = []
-    for i in range(0, len(texts), batch_size):
-        chunk = texts[i:i+batch_size]
-        emb = text_model.encode(chunk, show_progress_bar=False)
-        embeddings.extend(emb)
-    return np.array(embeddings)
+# Note: generate_text_embeddings function removed - Langchain FAISS handles text embeddings internally
+
+# def generate_image_embeddings_with_context(paths, descriptions, target_size=(224, 224)):
+#     vectors = []
+#     for path, description in zip(paths, descriptions):
+#         response = requests.get(path)
+#         image = Image.open(BytesIO(response.content)).convert("RGB").resize(target_size)
+#
+#         # 👇 Use both image + description
+#         inputs = clip_processor(images=image, text=[description], return_tensors="pt", padding=True)
+#
+#         with torch.no_grad():
+#             outputs = clip_model(**inputs)  # ✅ call the full model
+#             image_features = outputs.image_embeds  # ✅ get the guided image embedding
+#
+#         vectors.append(image_features.cpu().numpy().squeeze())
+#         del inputs, outputs
+#         torch.cuda.empty_cache()
+#     return np.array(vectors)
 
 def generate_image_embeddings_with_context(paths, descriptions, target_size=(224, 224)):
+    """
+    Generate text-only embeddings for image descriptions.
+    This ensures compatibility with text queries during retrieval.
+    """
     vectors = []
     for path, description in zip(paths, descriptions):
-        response = requests.get(path)
-        image = Image.open(BytesIO(response.content)).convert("RGB").resize(target_size)
-
-        # 👇 Use both image + description
-        inputs = clip_processor(images=image, text=[description], return_tensors="pt", padding=True)
-
+        # Use only the text description, not the image
+        # This creates embeddings in the same space as query text embeddings
+        inputs = clip_processor(text=[description], return_tensors="pt", padding=True, truncation=True)
+        
         with torch.no_grad():
-            outputs = clip_model(**inputs)  # ✅ call the full model
-            image_features = outputs.image_embeds  # ✅ get the guided image embedding
-
-        vectors.append(image_features.cpu().numpy().squeeze())
-        del inputs, outputs
+            # Use get_text_features instead of the full model
+            text_features = clip_model.get_text_features(**inputs)
+        
+        vectors.append(text_features.cpu().numpy().squeeze())
+        del inputs, text_features
         torch.cuda.empty_cache()
+    
     return np.array(vectors)
 
 def download_blob_to_temp(blob_name):
@@ -128,6 +150,9 @@ def load_or_create_index(blob_subdir, index_filename, new_embeddings):
     blob_name = f"{blob_subdir}/{index_filename}"
     temp_path = os.path.join(tempfile.gettempdir(), index_filename)
 
+    # Normalize the new embeddings first
+    faiss.normalize_L2(new_embeddings)
+
     downloaded = download_blob_to_temp(blob_name)
 
     if downloaded and os.path.exists(temp_path):
@@ -136,21 +161,90 @@ def load_or_create_index(blob_subdir, index_filename, new_embeddings):
 
         if index.d != dim:
             logging.warning(f"Index dimension mismatch: found {index.d}, expected {dim}. Creating new index.")
-            index = faiss.IndexFlatL2(dim)
+            index = faiss.IndexFlatIP(dim)  # Changed from IndexFlatL2
+        else:
+            # Handle existing L2 indexes - convert to IP
+            if hasattr(index, 'metric_type') and index.metric_type != faiss.METRIC_INNER_PRODUCT:
+                logging.info("Converting existing L2 index to Inner Product index")
+                # Extract all existing vectors
+                existing_vectors = np.vstack([index.reconstruct(i) for i in range(index.ntotal)])
+                # Normalize existing vectors
+                faiss.normalize_L2(existing_vectors)
+                # Create new IP index and add normalized vectors
+                index = faiss.IndexFlatIP(dim)
+                index.add(existing_vectors)
     else:
         logging.info("No existing index found. Creating new one.")
-        index = faiss.IndexFlatL2(dim)
+        index = faiss.IndexFlatIP(dim)  # Changed from IndexFlatL2
 
     index.add(new_embeddings)
     return index, temp_path
 
-def create_or_update_vector_db(text_embeds, img_embeds, img_paths, img_descriptions):
-    # TEXT INDEX
+def create_or_update_vector_db(texts, img_embeds, img_paths, img_descriptions):
+    # TEXT INDEX - Using Langchain FAISS to create both index.faiss and index.pkl
     try:
-        text_index, text_path = load_or_create_index("text_faiss", "index.faiss", text_embeds)
-        faiss.write_index(text_index, text_path)
-        text_url = upload_to_blob(text_path, "text_faiss")
-        logging.info(f"Text FAISS index uploaded: {text_url}")
+        # Create Document objects from texts
+        documents = [Document(page_content=text, metadata={"source": f"page_{i}"}) for i, text in enumerate(texts)]
+        
+        # Create local directory for saving
+        temp_dir = tempfile.gettempdir()
+        local_faiss_dir = os.path.join(temp_dir, "text_faiss_temp")
+        os.makedirs(local_faiss_dir, exist_ok=True)
+        
+        # Check if existing index exists and download it
+        existing_vectorstore = None
+        try:
+            # Try to download existing files
+            faiss_blob_name = "text_faiss/index.faiss"
+            pkl_blob_name = "text_faiss/index.pkl"
+            
+            faiss_downloaded = download_blob_to_temp(faiss_blob_name)
+            pkl_downloaded = download_blob_to_temp(pkl_blob_name)
+            
+            # Copy downloaded files to our working directory
+            if faiss_downloaded and pkl_downloaded:
+                import shutil
+                faiss_temp_path = os.path.join(tempfile.gettempdir(), "index.faiss")
+                pkl_temp_path = os.path.join(tempfile.gettempdir(), "index.pkl")
+                
+                if os.path.exists(faiss_temp_path) and os.path.exists(pkl_temp_path):
+                    shutil.copy(faiss_temp_path, os.path.join(local_faiss_dir, "index.faiss"))
+                    shutil.copy(pkl_temp_path, os.path.join(local_faiss_dir, "index.pkl"))
+                    
+                    # Load existing vectorstore
+                    existing_vectorstore = FAISS.load_local(
+                        local_faiss_dir,
+                        EMBEDDING_MODEL,
+                        allow_dangerous_deserialization=True
+                    )
+                    logging.info("Loaded existing text FAISS vectorstore from blob")
+        except Exception as e:
+            logging.warning(f"Could not load existing text vectorstore: {e}")
+        
+        # Create or update vectorstore
+        if existing_vectorstore:
+            # Add new documents to existing vectorstore
+            existing_vectorstore.add_documents(documents)
+            vectorstore = existing_vectorstore
+            logging.info("Added new documents to existing text vectorstore")
+        else:
+            # Create new vectorstore from documents
+            vectorstore = FAISS.from_documents(documents, EMBEDDING_MODEL)
+            logging.info("Created new text vectorstore from documents")
+        
+        # Save vectorstore locally (creates both index.faiss and index.pkl)
+        vectorstore.save_local(local_faiss_dir)
+        
+        # Upload both files to blob storage
+        faiss_path = os.path.join(local_faiss_dir, "index.faiss")
+        pkl_path = os.path.join(local_faiss_dir, "index.pkl")
+        
+        faiss_url = upload_to_blob(faiss_path, "text_faiss")
+        pkl_url = upload_to_blob(pkl_path, "text_faiss")
+        
+        logging.info(f"Text FAISS index uploaded: {faiss_url}")
+        logging.info(f"Text FAISS pkl uploaded: {pkl_url}")
+        
     except Exception as e:
         logging.error(f"Failed to create/update text FAISS index: {e}")
         raise
@@ -201,9 +295,8 @@ def process_pdf_and_create_or_update_vector_db(pdf_path):
     log_mem()
     logging.info("Extracted text and images")
 
-    text_embeds = generate_text_embeddings(texts)
-    log_mem()
-    logging.info("Generated text embeddings")
+    # No need to generate text embeddings here - Langchain FAISS will handle it
+    logging.info("Text will be embedded by Langchain FAISS")
 
     if images:
         # Use the full URL for processing
@@ -223,7 +316,7 @@ def process_pdf_and_create_or_update_vector_db(pdf_path):
         logging.info("No images found in the PDF")
 
     log_mem()
-    create_or_update_vector_db(text_embeds, img_embeds, img_names, img_descriptions)
+    create_or_update_vector_db(texts, img_embeds, img_names, img_descriptions)
     logging.info("All vector DBs updated.")
 
 if __name__ == "__main__":
