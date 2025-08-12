@@ -61,13 +61,21 @@ def generate_new_embedding(image_url, description):
         outputs = clip_model(**inputs)
         image_features = outputs.image_embeds  # guided image embedding
 
-    return image_features.cpu().numpy().squeeze()
+    # Normalize the new embedding
+    embedding = image_features.cpu().numpy().squeeze()
+    embedding = embedding.reshape(1, -1)  # Reshape for faiss
+    faiss.normalize_L2(embedding)  # Normalize the new embedding
+    return embedding.squeeze()
 
 def update_faiss_index(index, new_embedding, target_idx):
     all_vectors = np.vstack([index.reconstruct(i) for i in range(index.ntotal)])
     all_vectors[target_idx] = new_embedding
+    
+    # Normalize all vectors
+    faiss.normalize_L2(all_vectors)
+    
     dim = all_vectors.shape[1]
-    new_index = faiss.IndexFlatL2(dim)
+    new_index = faiss.IndexFlatIP(dim)  # Changed from IndexFlatL2 to IndexFlatIP
     new_index.add(all_vectors)
     return new_index
 
