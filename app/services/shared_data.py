@@ -22,6 +22,8 @@ connected_audio_clients = []
 saveConv = []
 audio_source = []
 closest_image_path = []
+qna_flag = []
+topic_title = []
 
 def set_contents(value):
     global contents
@@ -189,4 +191,34 @@ def get_closest_image_path(connectrobot):
     for entry in closest_image_path:
         if connectrobot in entry:
             return entry[connectrobot]  # Return the count for the robot_id
+    return None
+
+def set_qna_flag(robot_id, value):
+    global qna_flag
+    for entry in qna_flag:
+        if robot_id in entry:
+            entry[robot_id] = value
+            return
+    # If not found, append a new dictionary
+    qna_flag.append({robot_id: value})
+
+def get_qna_flag(robot_id):
+    for entry in qna_flag:
+        if robot_id in entry:
+            return entry[robot_id]
+    return None
+
+def set_topic_title(robot_id, value):
+    global topic_title
+    for entry in topic_title:
+        if robot_id in entry:
+            entry[robot_id] = value
+            return
+    # If not found, append a new dictionary
+    topic_title.append({robot_id: value})
+
+def get_topic_title(robot_id):
+    for entry in topic_title:
+        if robot_id in entry:
+            return entry[robot_id]
     return None
