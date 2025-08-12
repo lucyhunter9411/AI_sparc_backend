@@ -28,7 +28,7 @@ the socket never blocks long enough to miss keep-alive pings.
 
 from __future__ import annotations
 
-import asyncio, logging, time
+import asyncio, logging, time, json
 from typing import Any
 
 from fastapi import APIRouter, Depends, WebSocket
@@ -46,6 +46,7 @@ from app.services.vision_service import  handle_vision_data
 from app.services.shared_data import set_connected_audio_clients, set_audio_source, get_audio_source, get_saveConv
 from app.services.audio_chat_pipeline import pipeline
 import os
+import base64
 # ---------------------------------------------------------------------------
 
 from dotenv import load_dotenv
@@ -63,7 +64,8 @@ try:
     CHUNK_SIZE = int(CHUNK_SIZE)
 except (TypeError, ValueError):
     # Set a default value if CHUNK_SIZE is not set or is not a valid integer
-    CHUNK_SIZE = 2048  # Example default value, adjust as needed
+    # WebSocket limit is 4MB (4194304), so use 2MB to account for JSON metadata overhead
+    CHUNK_SIZE = 2097152  # 2MB - safe size accounting for JSON overhead
 
 
 def chunk_audio(audio_data, chunk_size):
@@ -78,6 +80,21 @@ def chunk_audio(audio_data, chunk_size):
             "sequence_number": i,
             "total_chunks": total_chunks,
             "data": list(chunk)
+        })
+    return chunks
+    
+def chunk_audio_base64(audio_data, chunk_size):
+    """Split audio data into chunks with sequence numbers and total count."""
+    total_chunks = (len(audio_data) + chunk_size - 1) // chunk_size
+    chunks = []
+    for i in range(total_chunks):
+        start = i * chunk_size
+        end = start + chunk_size
+        chunk = audio_data[start:end]
+        chunks.append({
+            "sequence_number": i,
+            "total_chunks": total_chunks,
+            "data": base64.b64encode(chunk).decode('utf-8')  # Use base64 instead of list
         })
     return chunks
 
@@ -171,17 +188,23 @@ async def before_lecture(
                     # await mgr.send_role(robot_id, "frontend", out_msg)
                     
                     audio_chunks = chunk_audio(result["wav_bytes"], CHUNK_SIZE)
+                    log.info(f"[{robot_id}] Created {len(audio_chunks)} audio chunks for frontend")
                     
                     # Send each chunk with its metadata
-                    for chunk in audio_chunks:
+                    for i, chunk in enumerate(audio_chunks):
                         out_msg = {
                             "robot_id": robot_id,
                             "type": "model",
-                            "text": result["assistant_text"],
+                            "text": result["assistant_text"] if i == 0 else "",  # Only send text with first chunk
                             "audio_chunk": chunk,  # Send each chunk with its metadata
                             "ts": time.time(),
-                            "image_path": closest_image_path
+                            "image_path": closest_image_path if i == 0 else None  # Only send image path with first chunk
                         }
+                        
+                        # Log message size for monitoring
+                        msg_size = len(json.dumps(out_msg).encode('utf-8'))
+                        log.info(f"[{robot_id}] Sending chunk {i+1}/{len(audio_chunks)}, message size: {msg_size:,} bytes")
+                        
                         await mgr.send_role(robot_id, "frontend", out_msg)
                     
                 elif audio_source == "speech":
@@ -224,18 +247,23 @@ async def before_lecture(
                     
                     # CRITICAL: Send audio to audio clients regardless of image processing success/failure
                     log.info(f"[{robot_id}] 🔊 Starting audio sending to audio clients")
-                    audio_chunks = chunk_audio(result["wav_bytes"], CHUNK_SIZE)
+                    audio_chunks = chunk_audio_base64(result["wav_bytes"], CHUNK_SIZE)
                     log.info(f"[{robot_id}] 🔊 Sending {len(audio_chunks)} audio chunks to audio clients")
                     
                     # Send each chunk with its metadata
-                    for chunk in audio_chunks:
+                    for i, chunk in enumerate(audio_chunks):
                         out_msg = {
                             "robot_id": robot_id,
                             "type": "model",
-                            "text": result["assistant_text"],
+                            "text": result["assistant_text"] if i == 0 else "",  # Only send text with first chunk
                             "audio_chunk": chunk,  # Send each chunk with its metadata
                             "ts": time.time(),
                         }
+                        
+                        # Log message size for monitoring
+                        msg_size = len(json.dumps(out_msg).encode('utf-8'))
+                        log.info(f"[{robot_id}] Sending audio chunk {i+1}/{len(audio_chunks)}, message size: {msg_size:,} bytes")
+                        
                         await mgr.send_role(robot_id, "audio", out_msg)
                     
                     log.info(f"[{robot_id}] ✅ Audio chunks sent to audio clients successfully")
