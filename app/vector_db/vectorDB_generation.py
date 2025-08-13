@@ -7,7 +7,7 @@ import psutil
 import logging
 import numpy as np
 from io import BytesIO
-from PIL import Image
+from PIL import Image, UnidentifiedImageError
 from datetime import datetime
 from transformers import CLIPProcessor, CLIPModel, BlipProcessor, BlipForConditionalGeneration
 from sentence_transformers import SentenceTransformer
@@ -23,22 +23,23 @@ logging.basicConfig(level=logging.INFO)
 
 # Azure Blob configuration
 AZURE_CONNECTION_STRING = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
-# EMBEDDING_MODEL    = os.getenv("EMBEDDING_MODEL")
 EMBEDDING_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
 EMBEDDING_MODEL = HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL_NAME)
 SENTENCE_TRANSFORMER_MODEL = SentenceTransformer("all-MiniLM-L6-v2")  # Keep for other uses
-BLOB_CONTAINER_NAME = "pdf-images"
+BLOB_STORAGE_FAISS_FOLDER = os.getenv("BLOB_STORAGE_FAISS_FOLDER")
+BLOB_STORAGE_CONTAINER_FOLDER = os.getenv("BLOB_STORAGE_CONTAINER_FOLDER")
+BLOB_FAISS_BASE_PATH = os.getenv("BLOB_FAISS_BASE_PATH")  # Base path for FAISS files within the container
 
 # Azure Blob client
 blob_service_client = BlobServiceClient.from_connection_string(AZURE_CONNECTION_STRING)
-container_client = blob_service_client.get_container_client(BLOB_CONTAINER_NAME)
+container_client = blob_service_client.get_container_client(BLOB_STORAGE_CONTAINER_FOLDER)
 
 def upload_to_blob(local_path, blob_subdir):
     blob_name = f"{blob_subdir}/{os.path.basename(local_path)}"
     content_settings = ContentSettings(content_type="image/jpeg")  # ← Changed from "application/octet-stream"
     with open(local_path, "rb") as data:
         container_client.upload_blob(name=blob_name, data=data, overwrite=True, content_settings=content_settings)
-    blob_url = f"https://{blob_service_client.account_name}.blob.core.windows.net/{BLOB_CONTAINER_NAME}/{blob_name}"
+    blob_url = f"https://{blob_service_client.account_name}.blob.core.windows.net/{BLOB_STORAGE_CONTAINER_FOLDER}/{blob_name}"
     return blob_url
 
 # Load models
@@ -80,39 +81,47 @@ def extract_text_and_images(pdf_file):
             filename = f"image_{page_num}_{img_idx}_{pdf_file_name}.jpg"
             local_path = os.path.join(tempfile.gettempdir(), filename)
             image.save(local_path, format="JPEG", quality=50, optimize=True)
-            public_url = upload_to_blob(local_path, "images")
+            public_url = upload_to_blob(local_path, f"{BLOB_FAISS_BASE_PATH}/images")
+            logging.info(f"Uploaded image to: {public_url}")
             images.append((public_url, page_num, img_idx))
     return texts, images
 
 def generate_image_description(path):
-    response = requests.get(path)
-    image = Image.open(BytesIO(response.content)).convert("RGB")
-    inputs = blip_processor(image, return_tensors="pt")
-    out = blip_model.generate(**inputs)
-    desc = blip_processor.decode(out[0], skip_special_tokens=True)
-    del image, inputs, out
-    torch.cuda.empty_cache()
-    return desc
-
-# Note: generate_text_embeddings function removed - Langchain FAISS handles text embeddings internally
-
-# def generate_image_embeddings_with_context(paths, descriptions, target_size=(224, 224)):
-#     vectors = []
-#     for path, description in zip(paths, descriptions):
-#         response = requests.get(path)
-#         image = Image.open(BytesIO(response.content)).convert("RGB").resize(target_size)
-#
-#         # 👇 Use both image + description
-#         inputs = clip_processor(images=image, text=[description], return_tensors="pt", padding=True)
-#
-#         with torch.no_grad():
-#             outputs = clip_model(**inputs)  # ✅ call the full model
-#             image_features = outputs.image_embeds  # ✅ get the guided image embedding
-#
-#         vectors.append(image_features.cpu().numpy().squeeze())
-#         del inputs, outputs
-#         torch.cuda.empty_cache()
-#     return np.array(vectors)
+    try:
+        logging.info(f"Attempting to fetch image from: {path}")
+        response = requests.get(path, timeout=30)
+        response.raise_for_status()  # Raise an exception for bad status codes
+        
+        # Check if the response content is actually an image
+        if not response.content:
+            logging.error(f"Empty response content for image: {path}")
+            return "Image description unavailable"
+        
+        # Check content type
+        content_type = response.headers.get('content-type', '')
+        if not content_type.startswith('image/'):
+            logging.error(f"Invalid content type '{content_type}' for image: {path}")
+            logging.error(f"Response content preview: {response.content[:200]}")
+            return "Image description unavailable"
+        
+        image = Image.open(BytesIO(response.content)).convert("RGB")
+        inputs = blip_processor(image, return_tensors="pt")
+        out = blip_model.generate(**inputs)
+        desc = blip_processor.decode(out[0], skip_special_tokens=True)
+        del image, inputs, out
+        torch.cuda.empty_cache()
+        logging.info(f"Successfully generated description for: {path}")
+        return desc
+        
+    except requests.exceptions.RequestException as e:
+        logging.error(f"Request error fetching image {path}: {e}")
+        return "Image description unavailable"
+    except UnidentifiedImageError as e:
+        logging.error(f"Cannot identify image file {path}: {e}")
+        return "Image description unavailable"
+    except Exception as e:
+        logging.error(f"Unexpected error processing image {path}: {e}")
+        return "Image description unavailable"
 
 def generate_image_embeddings_with_context(paths, descriptions, target_size=(224, 224)):
     """
@@ -195,8 +204,8 @@ def create_or_update_vector_db(texts, img_embeds, img_paths, img_descriptions):
         existing_vectorstore = None
         try:
             # Try to download existing files
-            faiss_blob_name = "text_faiss/index.faiss"
-            pkl_blob_name = "text_faiss/index.pkl"
+            faiss_blob_name = f"{BLOB_FAISS_BASE_PATH}/text_faiss/index.faiss"
+            pkl_blob_name = f"{BLOB_FAISS_BASE_PATH}/text_faiss/index.pkl"
             
             faiss_downloaded = download_blob_to_temp(faiss_blob_name)
             pkl_downloaded = download_blob_to_temp(pkl_blob_name)
@@ -239,8 +248,8 @@ def create_or_update_vector_db(texts, img_embeds, img_paths, img_descriptions):
         faiss_path = os.path.join(local_faiss_dir, "index.faiss")
         pkl_path = os.path.join(local_faiss_dir, "index.pkl")
         
-        faiss_url = upload_to_blob(faiss_path, "text_faiss")
-        pkl_url = upload_to_blob(pkl_path, "text_faiss")
+        faiss_url = upload_to_blob(faiss_path, f"{BLOB_FAISS_BASE_PATH}/text_faiss")
+        pkl_url = upload_to_blob(pkl_path, f"{BLOB_FAISS_BASE_PATH}/text_faiss")
         
         logging.info(f"Text FAISS index uploaded: {faiss_url}")
         logging.info(f"Text FAISS pkl uploaded: {pkl_url}")
@@ -251,9 +260,9 @@ def create_or_update_vector_db(texts, img_embeds, img_paths, img_descriptions):
 
     # IMAGE INDEX
     try:
-        image_index, image_path = load_or_create_index("image_faiss", "index.faiss", img_embeds)
+        image_index, image_path = load_or_create_index(f"{BLOB_FAISS_BASE_PATH}/image_faiss", "index.faiss", img_embeds)
         faiss.write_index(image_index, image_path)
-        image_url = upload_to_blob(image_path, "image_faiss")
+        image_url = upload_to_blob(image_path, f"{BLOB_FAISS_BASE_PATH}/image_faiss")
         logging.info(f"Image FAISS index uploaded: {image_url}")
     except Exception as e:
         logging.error(f"Failed to create/update image FAISS index: {e}")
@@ -262,7 +271,7 @@ def create_or_update_vector_db(texts, img_embeds, img_paths, img_descriptions):
     # METADATA
     try:
         meta_path = os.path.join(tempfile.gettempdir(), "image_faiss_metadata.json")
-        blob_name = "image_faiss/image_faiss_metadata.json"
+        blob_name = f"{BLOB_FAISS_BASE_PATH}/image_faiss/image_faiss_metadata.json"
 
         existing_metadata = {"image_paths": [], "descriptions": []}
         try:
@@ -283,7 +292,7 @@ def create_or_update_vector_db(texts, img_embeds, img_paths, img_descriptions):
         with open(meta_path, "w") as f:
             json.dump(updated_metadata, f, indent=2)
 
-        meta_url = upload_to_blob(meta_path, "image_faiss")
+        meta_url = upload_to_blob(meta_path, f"{BLOB_FAISS_BASE_PATH}/image_faiss")
         logging.info(f"Metadata updated and uploaded: {meta_url}")
     except Exception as e:
         logging.error(f"Failed to handle metadata: {e}")

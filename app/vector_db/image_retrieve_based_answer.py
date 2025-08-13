@@ -104,8 +104,8 @@ async def retrieve_image_safe(user_query, generated_text, robot_id, top_k=1):
         download_duration = 0
         
         # Initialize FAISS index and metadata
-        DB_IMAGE_FAISS_PATH = os.getenv("DB_IMAGE_FAISS_PATH", "https://classroomdata.blob.core.windows.net/pdf-images/image_faiss")
-        UPLOAD_FOLDER_FAISS = os.getenv("UPLOAD_FOLDER_FAISS")
+        BLOB_STORAGE_IMAGE_FAISS_DIR = os.getenv("BLOB_STORAGE_IMAGE_FAISS_DIR")
+        BLOB_STORAGE_FAISS_DIR = os.getenv("BLOB_STORAGE_FAISS_DIR")
 
         if LOCAL_MODE:
             # Use local files
@@ -148,7 +148,7 @@ async def retrieve_image_safe(user_query, generated_text, robot_id, top_k=1):
 
             # Download FAISS index
             faiss_download_start = time.perf_counter()
-            faiss_url = f"{DB_IMAGE_FAISS_PATH}/index.faiss"
+            faiss_url = f"{BLOB_STORAGE_IMAGE_FAISS_DIR}/index.faiss"
             response = requests.get(faiss_url)
             response.raise_for_status()
             with open(local_faiss_path, "wb") as f:
@@ -158,7 +158,7 @@ async def retrieve_image_safe(user_query, generated_text, robot_id, top_k=1):
 
             # Download metadata
             metadata_download_start = time.perf_counter()
-            metadata_url = f"{DB_IMAGE_FAISS_PATH}/image_faiss_metadata.json"
+            metadata_url = f"{BLOB_STORAGE_IMAGE_FAISS_DIR}/image_faiss_metadata.json"
             response = requests.get(metadata_url)
             response.raise_for_status()
             with open(local_json_path, "wb") as f:
@@ -179,7 +179,7 @@ async def retrieve_image_safe(user_query, generated_text, robot_id, top_k=1):
                 # logger.info(f"Normalized path: {path} -> {normalized_path}")
                 # if not os.path.exists(normalized_path):
                 #     logger.warning(f"Image file does not exist: {normalized_path}")
-                image_paths.append(f"{UPLOAD_FOLDER_FAISS}/images/{path}")
+                image_paths.append(f"{BLOB_STORAGE_FAISS_DIR}/images/{path}")
 
 
         # Process the query

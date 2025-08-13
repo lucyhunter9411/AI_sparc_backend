@@ -10,7 +10,7 @@ from app.services.stt_service import transcribe_audio
 from app.services.llm_service import build_chat_prompt as build_prompt
 from app.services.llm_service import predict as llm_predict
 from app.utils.censor import sanitize_text
-from app.services.shared_data import get_saveConv
+from app.services.shared_data import get_saveConv, set_qna_flag
 from app.services import shared_data
 import main
 import wave
@@ -34,11 +34,36 @@ async def save_audio_to_file(audio_bytes, robot_id):
         wf.writeframes(audio_bytes)
     log.info(f"✅ Audio saved to {audio_path}")
 
+def analyze_performance(timing_data: dict, robot_id: str):
+    """Analyze pipeline performance and log insights."""
+    total = timing_data["total"]
+    components = {
+        "STT": timing_data["stt"],
+        "FAISS": timing_data["faiss"], 
+        "LLM": timing_data["llm"],
+        "TTS": timing_data["tts"]
+    }
+    
+    # Find the slowest component
+    slowest = max(components.items(), key=lambda x: x[1])
+    
+    # Calculate percentages
+    percentages = {name: (duration/total)*100 for name, duration in components.items()}
+    
+    log.info("[%s] 📊 Performance Analysis - Slowest: %s (%.1f%%, %.3fs)", 
+             robot_id, slowest[0], percentages[slowest[0]], slowest[1])
+    
+    # Alert if any component is taking too long
+    if slowest[1] > 2.0:  # More than 2 seconds
+        log.warning("[%s] ⚠️  %s is taking longer than expected: %.3fs", 
+                   robot_id, slowest[0], slowest[1])
+
 async def pipeline(robot_id: str, msg, audio_source) -> dict:
     """
     Full STT → LLM → TTS pipeline for one 'speech' clip.
     """
-
+    pipeline_start = time.perf_counter()
+    
     # 1. decode wav clip to a temp file
     # b64_clip: str = msg.data["audio"]
     # pcm_bytes = base64.b64decode(b64_clip)
@@ -54,8 +79,10 @@ async def pipeline(robot_id: str, msg, audio_source) -> dict:
         wav_path = tmp.name
 
     # 2. speech-to-text
+    stt_start = time.perf_counter()
     stt_backend = msg.data.get("backend", "whisper-1")
     user_text = await transcribe_audio(wav_path, stt_backend)
+    stt_duration = time.perf_counter() - stt_start
 
     in_msg: dict[str, Any] = {
         "type": "user",
@@ -63,16 +90,22 @@ async def pipeline(robot_id: str, msg, audio_source) -> dict:
         "ts": time.time(),
     }
 
-    log.info("[%s] 📝 transcript: %s", robot_id, user_text)
+    log.info("[%s] 📝 STT completed in %.3fs - transcript: %s", robot_id, stt_duration, user_text)
 
     # update conversation history
     history = shared_data.conversations[robot_id]
     history.append(user_text)
 
     # Retrieve supporting context from FAISS
+    faiss_start = time.perf_counter()
     retrieved_docs = main.faiss_text_db.similarity_search(user_text, k=5)
+    faiss_duration = time.perf_counter() - faiss_start
+    
     if retrieved_docs:
-        log.info("FAISS match found")
+        log.info("[%s] 🔍 FAISS retrieval completed in %.3fs - %d docs found", robot_id, faiss_duration, len(retrieved_docs))
+    else:
+        log.info("[%s] 🔍 FAISS retrieval completed in %.3fs - no docs found", robot_id, faiss_duration)
+        
     retrieved_texts = (
         "\n".join(sanitize_text(doc.page_content) for doc in retrieved_docs)
         if retrieved_docs else "No relevant context found."
@@ -87,18 +120,39 @@ async def pipeline(robot_id: str, msg, audio_source) -> dict:
     )
 
     # LLM prediction
+    llm_start = time.perf_counter()
     assistant_text = await llm_predict(prompt)
-
-    # # Create a task to run image_retrieve_based_answer independently
-    # asyncio.create_task(asyncio.to_thread(retrieve_image, user_text, assistant_text, robot_id, top_k=1))
+    llm_duration = time.perf_counter() - llm_start
 
     history.append(assistant_text)
-    log.info("🤖 LLM response received")
+    log.info("[%s] 🤖 LLM prediction completed in %.3fs - response received", robot_id, llm_duration)
 
     # text-to-speech
+    tts_start = time.perf_counter()
     wav_bytes = await _tts_bytes(assistant_text)
+    tts_duration = time.perf_counter() - tts_start
+    
     secs = len(wav_bytes) / (16_000 * 2)  # 16-kHz mono 16-bit
-    log.info("[%s] 🔊 TTS %.2fs (%.1f kB)", robot_id, secs, len(wav_bytes) / 1024)
+    log.info("[%s] 🔊 TTS completed in %.3fs - audio: %.2fs duration (%.1f kB)", robot_id, tts_duration, secs, len(wav_bytes) / 1024)
+    
+    set_qna_flag(robot_id, False)
+    
+    # Calculate total pipeline time
+    total_duration = time.perf_counter() - pipeline_start
+    
+    # Log comprehensive timing summary
+    log.info("[%s] ⏱️  Pipeline completed in %.3fs - Breakdown: STT=%.3fs, FAISS=%.3fs, LLM=%.3fs, TTS=%.3fs", 
+             robot_id, total_duration, stt_duration, faiss_duration, llm_duration, tts_duration)
+    
+    # Performance analysis
+    timing_data = {
+        "total": total_duration,
+        "stt": stt_duration,
+        "faiss": faiss_duration,
+        "llm": llm_duration,
+        "tts": tts_duration
+    }
+    analyze_performance(timing_data, robot_id)
     
     # Return all processed data
     return {
@@ -106,6 +160,7 @@ async def pipeline(robot_id: str, msg, audio_source) -> dict:
         "assistant_text": assistant_text,
         "wav_bytes": wav_bytes,
         "in_msg": in_msg,
-        "audio_source": audio_source
+        "audio_source": audio_source,
+        "timing": timing_data
     }
     

@@ -7,6 +7,7 @@ from datetime import datetime
 from pydantic import BaseModel
 import logging  # For logging information
 from app.services.llm_service import predict
+import os
 
 # Configure the logger
 logging.basicConfig(level=logging.INFO)  # Set the logging level
@@ -20,6 +21,30 @@ class VisionData(BaseModel):
     image: str  # The image data in bytes
     detect_user: list
     local_time_vision: int
+
+CHUNK_SIZE = os.getenv("CHUNK_SIZE")
+
+# Convert CHUNK_SIZE to an integer, with a default value if not set or invalid
+try:
+    CHUNK_SIZE = int(CHUNK_SIZE)
+except (TypeError, ValueError):
+    # Set a default value if CHUNK_SIZE is not set or is not a valid integer
+    CHUNK_SIZE = 2097152  # Example default value, adjust as needed - 2MB
+    
+def chunk_audio(audio_data, chunk_size):
+    """Split audio data into chunks with sequence numbers and total count."""
+    total_chunks = (len(audio_data) + chunk_size - 1) // chunk_size
+    chunks = []
+    for i in range(total_chunks):
+        start = i * chunk_size
+        end = start + chunk_size
+        chunk = audio_data[start:end]
+        chunks.append({
+            "sequence_number": i,
+            "total_chunks": total_chunks,
+            "data": list(chunk)
+        })
+    return chunks
 
 async def handle_vision_data(current_state_machine, robot_id, websocket):
     logger.info("handle_vision_data function is called correctly.")
@@ -72,22 +97,34 @@ async def handle_vision_data(current_state_machine, robot_id, websocket):
                     audio_stream.seek(0)
                     # audio_base64 = base64.b64encode(audio_stream.read()).decode("utf-8")
                     audio_bytes = audio_stream.read()  # Read the audio as bytes
+                    
+                    audio_chunks = chunk_audio(audio_bytes, CHUNK_SIZE)
+                    for i, chunk in enumerate(audio_chunks):
+                        chunk_message = {
+                            "robot_id": robot_id,
+                            "text": result if i == 0 else "",
+                            "audio_chunk": chunk,  # Send each chunk with its metadata
+                            "type": "model"
+                        }
+                        await websocket.send_text(json.dumps(chunk_message))
 
-                    data = {
-                        "robot_id": robot_id,
-                        "text": result,
-                        # "audio": audio_base64,
-                        "audio": list(audio_bytes),  # Use byte array instead of base64
-                        "type": "model",
-                    }
+                    # data = {
+                    #     "robot_id": robot_id,
+                    #     "text": result,
+                    #     # "audio": audio_base64,
+                    #     "audio": list(audio_bytes),  # Use byte array instead of base64
+                    #     "type": "model",
+                    # }
+
+                    # # Send to audio client
+                    # await websocket.send_text(json.dumps(data))
+
                     logger.info(
                         f"Data to be sent to audio client: robot_id: {robot_id}, "
                         f"text: {result}, type: model"
                     )
                     logger.info(f"audio_length: {audio_length}")
 
-                    # Send to audio client
-                    await websocket.send_text(json.dumps(data))
                     await asyncio.sleep(audio_length + 5)  # let audio play
 
             await asyncio.sleep(1)  # loop throttle
