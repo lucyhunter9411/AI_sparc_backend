@@ -42,7 +42,7 @@ def chunk_audio(audio_data, chunk_size):
         chunks.append({
             "sequence_number": i,
             "total_chunks": total_chunks,
-            "data": list(chunk)
+            "data": base64.b64encode(chunk).decode('utf-8')
         })
     return chunks
 
@@ -108,17 +108,6 @@ async def handle_vision_data(current_state_machine, robot_id, websocket):
                         }
                         await websocket.send_text(json.dumps(chunk_message))
 
-                    # data = {
-                    #     "robot_id": robot_id,
-                    #     "text": result,
-                    #     # "audio": audio_base64,
-                    #     "audio": list(audio_bytes),  # Use byte array instead of base64
-                    #     "type": "model",
-                    # }
-
-                    # # Send to audio client
-                    # await websocket.send_text(json.dumps(data))
-
                     logger.info(
                         f"Data to be sent to audio client: robot_id: {robot_id}, "
                         f"text: {result}, type: model"
@@ -150,5 +139,6 @@ async def get_data(vision_data: VisionData): # rename visionUpdate
     names_array = [entry['name'] for entry in detect_user]
     set_name_array(robot_id, names_array)
 
-    hand_raising_count = sum(1 for item in handup_result if item.get('label') == 'hand-raising')
+    # hand_raising_count = sum(1 for item in handup_result if item.get('label') == 'hand-raising')
+    hand_raising_count = sum(1 for item in handup_result if item.get('label') in ['hand-raising', 'writing', 'reading'])
     set_hand_raising_count(robot_id, hand_raising_count)

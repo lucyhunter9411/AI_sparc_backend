@@ -75,6 +75,7 @@ selectedModelName = get_default_llm_name()
 
 from app.core.config import get_settings
 from app.core.logging import setup_logging
+from app.core.version import get_version_info, VERSION_STRING
 settings = get_settings()
 setup_logging(level="INFO")        # single call replaces logging.basicConfig
 logger = logging.getLogger(__name__)  # module-specific logger
@@ -248,7 +249,7 @@ time_list = []
 @app.get("/health", tags=["utils"])
 async def health() -> dict[str, str]:
     """CI smoke-test endpoint."""
-    return {"status": "ok"}
+    return {"status": "ok", "version": VERSION_STRING}
 
 @app.post("/disconnect-all", tags=["utils"])
 async def disconnect_all_websockets():
@@ -267,6 +268,12 @@ async def debug_settings() -> dict:
         "testing": settings.testing,
         "env_frontend_url": os.getenv("FRONTEND_URL"),
     }
+
+@app.get("/version", tags=["utils"])
+async def get_version() -> dict:
+    """Get detailed version information."""
+    from app.core.version import get_full_version_info
+    return get_full_version_info()
 
 # Update the structure of lecture_states to include connectrobot
 lecture_states: Dict[str, Dict[str, Dict[str, Dict]]] = {}
@@ -441,47 +448,29 @@ async def generate_and_send_ai_response(
 
     audio_bytes = audio_stream.read()  # Read the audio as bytes
     
-    # Check if websocket is alive and send via audio websocket endpoint
-    if is_websocket_alive:
-        # Import the global variables from lecture module
-        from app.websockets.lecture import data_to_audio, lecture_to_audio
-        
-        # Create multi-language data structure like the websocket expects
-        language_text_data = {}
-        if selected_language == "English":
-            language_text_data["EnglishText"] = result
-        elif selected_language == "Hindi":
-            language_text_data["HindiText"] = result
-        elif selected_language == "Telugu":
-            language_text_data["TeluguText"] = result
-        else:
-            # Default to English if unknown language
-            language_text_data["EnglishText"] = result
-        
-        # Set the data for the audio websocket to pick up
-        data_to_audio[robot_id] = {
-            "data": language_text_data
-        }
-        
-        # Only update the selectedLanguageName, don't overwrite the entire structure
-        if robot_id not in lecture_to_audio:
-            lecture_to_audio[robot_id] = {}
-        lecture_to_audio[robot_id]["selectedLanguageName"] = selected_language
-        
-        
-        logger.info(f"[{robot_id}] Audio data sent to websocket audio endpoint")
-        await websocket.send_text(json.dumps({"text": result, "type": "model"}))
+    # ✅ USE CENTRALIZED AUDIO DISPATCH SERVICE for AI responses
+    from app.services.audio_dispatch_service import audio_dispatch_service
+    
+    # Prepare AI response data
+    ai_response_data = {}
+    if selected_language == "English":
+        ai_response_data["EnglishText"] = result
+    elif selected_language == "Hindi":
+        ai_response_data["HindiText"] = result
+    elif selected_language == "Telugu":
+        ai_response_data["TeluguText"] = result
     else:
-        # Fallback to original method - send via regular websocket
-        audio_chunks = chunk_audio(audio_bytes, CHUNK_SIZE)
-        for i, chunk in enumerate(audio_chunks):
-            chunk_message = {
-                "text": result if i == 0 else "",
-                "audio_chunk": chunk,  # Send each chunk with its metadata
-                "type": "model",
-                "ts": time.time()
-            }
-            await websocket.send_text(json.dumps(chunk_message))
+        ai_response_data["EnglishText"] = result  # Default to English
+    
+    # Use centralized dispatch service
+    await audio_dispatch_service.dispatch_audio(
+        robot_id=robot_id,
+        content_data=ai_response_data,
+        frontend_websocket=websocket
+    )
+    
+    # Send model response indicator to frontend
+    await websocket.send_text(json.dumps({"text": result, "type": "model"}))
 
     # audio_chunks = chunk_audio(audio_bytes, CHUNK_SIZE)
     # for i, chunk in enumerate(audio_chunks):

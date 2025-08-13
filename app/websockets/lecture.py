@@ -6,7 +6,7 @@ from app.state.lecture_state_machine import LectureStateMachine
 from typing import Dict, List
 import logging
 from app.api.deps import get_db
-from app.services.shared_data import set_contents, set_time_list, set_session_id_set, get_session_id_set, set_lecture_states, get_lecture_states, get_language_selected, set_topic_title, get_topic_title
+from app.services.shared_data import set_session_id_set, get_session_id_set, set_lecture_states, get_lecture_states, get_language_selected, set_topic_title, get_topic_title
 import uuid
 import asyncio
 import base64
@@ -27,9 +27,10 @@ robot_id_before = None
 
 from typing import Dict, List
 
-contents = []
-time_list = []
-topics = []
+# ❌ REMOVED: Global variables that were causing collisions
+# contents = []
+# time_list = []
+# topics = []
 
 CHUNK_SIZE = os.getenv("CHUNK_SIZE")
 
@@ -58,7 +59,9 @@ def chunk_audio(audio_data, chunk_size):
 
 @router.post("/startLecture/{lecture_id}/{topic_id}")
 async def start_lecture(lecture_id: str, topic_id: str, connectrobot: str = Form(...), db=Depends(get_db)):
-    global topics, contents, time_list
+    # ❌ REMOVED: global topics, contents, time_list - This was causing collisions!
+    
+    # ✅ LOCAL variables - each client gets their own copy
     topics = list(db.topics.find({"lecture_id": lecture_id}).sort("_id", 1))
 
     start_index = next((i for i, topic in enumerate(topics) if str(topic["_id"]) == str(topic_id)), None)
@@ -73,8 +76,9 @@ async def start_lecture(lecture_id: str, topic_id: str, connectrobot: str = Form
         contents.append({"text": "question", "time": topic["qna_time"]})
         time_list.append(topic["qna_time"])
 
-    set_contents(contents)
-    set_time_list(time_list)
+    # ❌ REMOVED: set_contents(contents) - This was overwriting global state!
+    # ❌ REMOVED: set_time_list(time_list) - This was overwriting global state!
+    
     lecture_states = get_lecture_states()
 
     if lecture_id not in lecture_states:
@@ -93,11 +97,13 @@ async def start_lecture(lecture_id: str, topic_id: str, connectrobot: str = Form
     # Use get method to safely access the selected language
     selected_language = language_selected.get(lecture_id, {}).get(connectrobot, {}).get("selectedLanguageName", "English")
     
+    # ✅ STORE CONTENT DATA LOCALLY IN SESSION - No more global collisions!
     lecture_states[lecture_id][connectrobot]["sessions"][session_id] = {
         "is_active": True,
         "selectedLanguageName": selected_language,
-        "contents": contents,
-        "time_list": time_list,
+        "contents": contents,        # ✅ Local content for this client only
+        "time_list": time_list,      # ✅ Local timing for this client only
+        "topics": topics,            # ✅ Local topics for this client only
         "connectrobot": connectrobot,
     }
     set_lecture_states(lecture_states)
@@ -166,7 +172,7 @@ async def websocket_lesson_audio(websocket: WebSocket, robot_id: str):
                             
                             await websocket.send_text(json_message)
                         data_to_audio[robot_id]["data"] = None
-            await asyncio.sleep(0.1)  # Reduced delay to catch data more quickly
+            await asyncio.sleep(0.05)  # ✅ REDUCED: Faster polling to reduce timing window for race conditions
     except WebSocketDisconnect:
         logger.error("Client disconnected from testdata WebSocket")
 
@@ -228,7 +234,10 @@ async def lecture_websocket_endpoint(websocket: WebSocket, lecture_id: str, conn
                 await state_machine.enter_student_qna(current_state_machine, connectrobot, websocket, data_frontend, lecture_to_audio[connectrobot], delay, retrieve_data, connectrobot)
                 state_machine.ev_to_conducting()
             else: 
-                data_to_audio[connectrobot]["data"] = data_frontend
+                # ✅ REMOVED: Direct data_to_audio manipulation that caused race conditions
+                # data_to_audio[connectrobot]["data"] = data_frontend  # OLD PROBLEMATIC CODE
+                
+                # ✅ NEW: Let enter_content handle audio dispatch through the centralized service
                 await state_machine.enter_content(data_frontend, lecture_to_audio[connectrobot], websocket, connectrobot, db, idx)
         await websocket.send_text(json.dumps({"type": "lesson_event", "text": "LECTURE_ENDED"})) 
                 
