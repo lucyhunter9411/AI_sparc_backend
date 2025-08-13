@@ -154,38 +154,6 @@ async def before_lecture(
                 # Send user's transcribed text
                 if audio_source == "frontend":
                     await mgr.send_role(robot_id, "frontend", result["in_msg"])
-                    # Create a task to run image_retrieve_based_answer independently
-                    log.info(f"[{robot_id}] Starting retrieve_image call for frontend source")
-                    log.info(f"[{robot_id}] User text: {result['user_text']}")
-                    log.info(f"[{robot_id}] Assistant text: {result['assistant_text']}")
-                    try:
-                        # closest_image_path_ini = await asyncio.to_thread(retrieve_image_safe, result["user_text"], result["assistant_text"], robot_id, top_k=1)
-                        closest_image_path_ini = await retrieve_image_safe(result["user_text"], result["assistant_text"], robot_id, top_k=1)
-                        # Adjust the path to be relative to the 'images' directory
-                        # closest_image_path = os.path.relpath(closest_image_path_ini, start='app/vector_db')
-                        closest_image_path = closest_image_path_ini
-                    except Exception as e:
-                        log.error(f"[{robot_id}] retrieve_image failed: {e}", exc_info=True)
-                        closest_image_path = None
-                    log.info(f"[{robot_id}] retrieve_image completed successfully: {closest_image_path}")
-
-                    # Make send_image_to_devices non-blocking so it doesn't prevent audio response
-                    try:
-                        await send_image_to_devices(robot_id, db, closest_image_path, log)
-                    except Exception as e:
-                        log.error(f"[{robot_id}] send_image_to_devices failed: {e}", exc_info=True)
-                        # Continue execution even if image sending fails
-
-                    # # Send assistant's response
-                    # out_msg = {
-                    #     "robot_id": robot_id,
-                    #     "type": "model",
-                    #     "text": result["assistant_text"],
-                    #     "audio": list(result["wav_bytes"]),
-                    #     "ts": time.time(),
-                    #     "image_path": closest_image_path
-                    # }
-                    # await mgr.send_role(robot_id, "frontend", out_msg)
                     
                     audio_chunks = chunk_audio(result["wav_bytes"], CHUNK_SIZE)
                     log.info(f"[{robot_id}] Created {len(audio_chunks)} audio chunks for frontend")
@@ -198,54 +166,60 @@ async def before_lecture(
                             "text": result["assistant_text"] if i == 0 else "",  # Only send text with first chunk
                             "audio_chunk": chunk,  # Send each chunk with its metadata
                             "ts": time.time(),
-                            "image_path": closest_image_path if i == 0 else None  # Only send image path with first chunk
+                            "image_path": None,  # Initially send None
+                            "is_image_update": False # Not an image update yet
                         }
                         
                         # Log message size for monitoring
                         msg_size = len(json.dumps(out_msg).encode('utf-8'))
-                        log.info(f"[{robot_id}] Sending chunk {i+1}/{len(audio_chunks)}, message size: {msg_size:,} bytes")
+                        log.info(f"[{robot_id}] 🔊 Sending audio chunk {i+1}/{len(audio_chunks)} to frontend, message size: {msg_size:,} bytes")
                         
                         await mgr.send_role(robot_id, "frontend", out_msg)
+                        log.info(f"[{robot_id}] ✅ Audio chunk {i+1}/{len(audio_chunks)} sent to frontend successfully")
+                    
+                    # Now handle image retrieval asynchronously and send image update
+                    async def handle_image_retrieval():
+                        try:
+                            log.info(f"[{robot_id}] Starting retrieve_image call for frontend source")
+                            log.info(f"[{robot_id}] User text: {result['user_text']}")
+                            log.info(f"[{robot_id}] Assistant text: {result['assistant_text']}")
+                            
+                            closest_image_path = await retrieve_image_safe(result["user_text"], result["assistant_text"], robot_id, top_k=1)
+                            log.info(f"[{robot_id}] retrieve_image completed successfully: {closest_image_path}")
+                            
+                            # Only send image update if we actually found an image
+                            if closest_image_path:
+                                # Send image update message to frontend (maintains compatibility)
+                                image_update_msg = {
+                                    "robot_id": robot_id,
+                                    "type": "model",  # Use same type for compatibility
+                                    "text": "",  # No additional text
+                                    "audio_chunk": None,  # No additional audio
+                                    "ts": time.time(),
+                                    "image_path": closest_image_path,  # Include image path
+                                    "is_image_update": True  # Flag to indicate this is an image update
+                                }
+                                await mgr.send_role(robot_id, "frontend", image_update_msg)
+                                
+                                # Also send to TV devices (maintains TV interface functionality)
+                                try:
+                                    await send_image_to_devices(robot_id, db, closest_image_path, log)
+                                except Exception as e:
+                                    log.error(f"[{robot_id}] send_image_to_devices failed: {e}", exc_info=True)
+                            else:
+                                log.info(f"[{robot_id}] No relevant image found - no WebSocket message sent (this is normal)")
+                                
+                        except Exception as e:
+                            log.error(f"[{robot_id}] retrieve_image failed: {e}", exc_info=True)
+                            log.info(f"[{robot_id}] Continuing without image due to retrieval failure or no relevant content")
+                    
+                    # Create task for image retrieval (non-blocking)
+                    asyncio.create_task(handle_image_retrieval())
                     
                 elif audio_source == "speech":
                     await mgr.send_role(robot_id, "speech", result["in_msg"])
                     
-                    # Initialize image path as None in case image processing fails
-                    closest_image_path = None
-                    
-                    # Create a task to run image_retrieve_based_answer independently
-                    log.info(f"[{robot_id}] Starting retrieve_image call for speech source")
-                    log.info(f"[{robot_id}] User text: {result['user_text']}")
-                    log.info(f"[{robot_id}] Assistant text: {result['assistant_text']}")
-                    try:
-                        closest_image_path_ini = await retrieve_image_safe(result["user_text"], result["assistant_text"], robot_id, top_k=1)
-                        # Adjust the path to be relative to the 'images' directory
-                        # closest_image_path = os.path.relpath(closest_image_path_ini, start='app/vector_db')
-                        closest_image_path = closest_image_path_ini
-                        log.info(f"[{robot_id}] retrieve_image completed successfully: {closest_image_path}")
-                    except Exception as e:
-                        log.error(f"[{robot_id}] retrieve_image failed: {e}", exc_info=True)
-                        closest_image_path = None
-                        log.info(f"[{robot_id}] Continuing without image due to retrieval failure")
-                    
-                    # Make send_image_to_devices non-blocking so it doesn't prevent audio response
-                    try:
-                        await send_image_to_devices(robot_id, db, closest_image_path, log)
-                    except Exception as e:
-                        log.error(f"[{robot_id}] send_image_to_devices failed: {e}", exc_info=True)
-                        # Continue execution even if image sending fails
-
-                    # Send assistant's response to frontend (with or without image)
-                    out_msg = {
-                        "robot_id": robot_id,
-                        "type": "model",
-                        "text": "",
-                        "ts": time.time(),
-                        "image_path": closest_image_path
-                    }
-                    await mgr.send_role(robot_id, "frontend", out_msg)
-                    
-                    # CRITICAL: Send audio to audio clients regardless of image processing success/failure
+                    # Send audio immediately without waiting for image retrieval
                     log.info(f"[{robot_id}] 🔊 Starting audio sending to audio clients")
                     audio_chunks = chunk_audio_base64(result["wav_bytes"], CHUNK_SIZE)
                     log.info(f"[{robot_id}] 🔊 Sending {len(audio_chunks)} audio chunks to audio clients")
@@ -262,11 +236,59 @@ async def before_lecture(
                         
                         # Log message size for monitoring
                         msg_size = len(json.dumps(out_msg).encode('utf-8'))
-                        log.info(f"[{robot_id}] Sending audio chunk {i+1}/{len(audio_chunks)}, message size: {msg_size:,} bytes")
+                        log.info(f"[{robot_id}] 🔊 Sending audio chunk {i+1}/{len(audio_chunks)} to audio clients, message size: {msg_size:,} bytes")
                         
                         await mgr.send_role(robot_id, "audio", out_msg)
                     
                     log.info(f"[{robot_id}] ✅ Audio chunks sent to audio clients successfully")
+                    
+                    # Send assistant's response to frontend (without image initially)
+                    out_msg = {
+                        "robot_id": robot_id,
+                        "type": "model",
+                        "text": "",
+                        "ts": time.time(),
+                        "image_path": None  # Initially send None
+                    }
+                    await mgr.send_role(robot_id, "frontend", out_msg)
+                    
+                    # Now handle image retrieval asynchronously and send image update
+                    async def handle_image_retrieval():
+                        try:
+                            log.info(f"[{robot_id}] Starting retrieve_image call for speech source")
+                            log.info(f"[{robot_id}] User text: {result['user_text']}")
+                            log.info(f"[{robot_id}] Assistant text: {result['assistant_text']}")
+                            
+                            closest_image_path = await retrieve_image_safe(result["user_text"], result["assistant_text"], robot_id, top_k=1)
+                            log.info(f"[{robot_id}] retrieve_image completed successfully: {closest_image_path}")
+                            
+                            # Only send image update if we actually found an image
+                            if closest_image_path:
+                                # Send image update message to frontend
+                                image_update_msg = {
+                                    "robot_id": robot_id,
+                                    "type": "model",
+                                    "text": "",
+                                    "ts": time.time(),
+                                    "image_path": closest_image_path,
+                                    "is_image_update": True
+                                }
+                                await mgr.send_role(robot_id, "frontend", image_update_msg)
+                                
+                                # Also send to TV devices
+                                try:
+                                    await send_image_to_devices(robot_id, db, closest_image_path, log)
+                                except Exception as e:
+                                    log.error(f"[{robot_id}] send_image_to_devices failed: {e}", exc_info=True)
+                            else:
+                                log.info(f"[{robot_id}] No relevant image found - no WebSocket message sent (this is normal)")
+                                
+                        except Exception as e:
+                            log.error(f"[{robot_id}] retrieve_image failed: {e}", exc_info=True)
+                            log.info(f"[{robot_id}] Continuing without image due to retrieval failure")
+                    
+                    # Create task for image retrieval (non-blocking)
+                    asyncio.create_task(handle_image_retrieval())
                     
                 continue
 

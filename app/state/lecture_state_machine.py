@@ -28,7 +28,7 @@ import os
 
 from app.services.stt_service import transcribe_audio
 from app.utils.audio import generate_audio_stream, get_audio_length
-from app.services.shared_data import get_contents, get_time_list, get_hand_raising_count, get_connected_audio_clients, set_qna_flag, get_qna_flag
+from app.services.shared_data import get_hand_raising_count, get_connected_audio_clients, set_qna_flag, get_qna_flag
 from app.services.vision_service import  handle_vision_data
 from app.websockets.connection_manager import ConnectionManager
 from app.api.deps import get_conn_mgr
@@ -230,15 +230,9 @@ class LectureStateMachine:
         from main import generate_and_send_ai_response
         set_qna_flag(robot_id, True)
         
-        connected_audio_clients = get_connected_audio_clients(robot_id)
-           
-        # Check if the WebSocket is still open by sending a ping
-        is_websocket_alive = True
-        try:
-            await connected_audio_clients.send_text(json.dumps({"type": "ping"}))
-        except Exception as e:
-            is_websocket_alive = False
-            logger.warning(f"WebSocket is not connected. Skipping message send. Error: {e}")
+        # ✅ REMOVED: Direct ping test that caused race conditions
+        # connected_audio_clients = get_connected_audio_clients(robot_id)
+        # The audio dispatch service will handle audio client detection atomically
 
         while question_active:    
             selectedLanguageName = lecture_state["selectedLanguageName"]
@@ -262,51 +256,29 @@ class LectureStateMachine:
                     resp = "क्षमा करें, कृपया अगली बार प्रश्न पूछें।"
                 elif selectedLanguageName == "Telugu":
                     resp = "క్షమించండి, దయచేసి తదుపరిసారి ప్రశ్న అడగండి."
-                audio_stream = generate_audio_stream(resp, selectedLanguageName)
-                audio_stream.seek(0)
-                # audio_base64 = base64.b64encode(audio_stream.read()).decode("utf-8")
-                audio_bytes = audio_stream.read()  # Read the audio as bytes
+                # ✅ USE CENTRALIZED AUDIO DISPATCH SERVICE for timeout responses
+                from app.services.audio_dispatch_service import audio_dispatch_service
                 
-                # Check if websocket is alive and send via audio websocket endpoint
-                if is_websocket_alive:
-                    # Import the global variables from lecture module
-                    from app.websockets.lecture import data_to_audio, lecture_to_audio
-                    
-                    # Create multi-language data structure like the websocket expects
-                    language_text_data = {}
-                    if selectedLanguageName == "English":
-                        language_text_data["EnglishText"] = resp
-                    elif selectedLanguageName == "Hindi":
-                        language_text_data["HindiText"] = resp
-                    elif selectedLanguageName == "Telugu":
-                        language_text_data["TeluguText"] = resp
-                    else:
-                        # Default to English if unknown language
-                        language_text_data["EnglishText"] = resp
-                    
-                    # Set the data for the audio websocket to pick up
-                    data_to_audio[robot_id] = {
-                        "data": language_text_data
-                    }
-                    
-                    # Only update the selectedLanguageName, don't overwrite the entire structure
-                    if robot_id not in lecture_to_audio:
-                        lecture_to_audio[robot_id] = {}
-                    lecture_to_audio[robot_id]["selectedLanguageName"] = selectedLanguageName
-                    
-                    
-                    logger.info(f"[{robot_id}] Audio data sent to websocket audio endpoint")
-                    await websocket.send_text(json.dumps({"text": resp, "type": "stop"}))
+                # Prepare timeout response data
+                timeout_data = {}
+                if selectedLanguageName == "English":
+                    timeout_data["EnglishText"] = resp
+                elif selectedLanguageName == "Hindi":
+                    timeout_data["HindiText"] = resp
+                elif selectedLanguageName == "Telugu":
+                    timeout_data["TeluguText"] = resp
                 else:
-                    # Fallback to original method - send via regular websocket
-                    audio_chunks = chunk_audio(audio_bytes, CHUNK_SIZE)
-                    for i, chunk in enumerate(audio_chunks):
-                        chunk_message = {
-                            "text": resp if i == 0 else "",
-                            "audio_chunk": chunk,  # Send each chunk with its metadata
-                            "type": "stop"
-                        }
-                        await websocket.send_text(json.dumps(chunk_message))
+                    timeout_data["EnglishText"] = resp  # Default to English
+                
+                # Use centralized dispatch service
+                await audio_dispatch_service.dispatch_audio(
+                    robot_id=robot_id,
+                    content_data=timeout_data,
+                    frontend_websocket=websocket
+                )
+                
+                # Send stop message to frontend
+                await websocket.send_text(json.dumps({"text": resp, "type": "stop"}))
 
                 
                 # audio_chunks = chunk_audio(audio_bytes, CHUNK_SIZE)
@@ -332,7 +304,8 @@ class LectureStateMachine:
                 question_active = False
                 remaining_time = delay * 60 - int(elapsed_time)
                 before = time.time()
-                await generate_and_send_ai_response(websocket, lecture_state, retrieve_data, remaining_time, is_websocket_alive, robot_id)
+                # ✅ FIXED: Pass True as default for is_websocket_alive since we're using centralized dispatch
+                await generate_and_send_ai_response(websocket, lecture_state, retrieve_data, remaining_time, True, robot_id)
                 logger.info(f"Remaining: {remaining_time}    Generation: {int(time.time() - before)}")
                 await asyncio.sleep(remaining_time-int(time.time() - before))
                 await websocket.send_text(json.dumps({"type": "lesson_event", "text": "SUMMARIZE_ENDED"}))
@@ -378,18 +351,26 @@ class LectureStateMachine:
     def start_lecture(self, websocket: WebSocket, lecture_states:Dict, connectrobot):
         logger.info(f"Lecture {self.lecture_id} started.")
         session_id = str(websocket.client)
-        contents = get_contents()
-        time_list = get_time_list()
+        
+        # ❌ REMOVED: Global function calls that could cause collisions
+        # contents = get_contents()
+        # time_list = get_time_list()
+        
+        # ✅ Get data from session instead - no more global dependencies!
+        session = lecture_states[self.lecture_id][connectrobot]["sessions"].get(session_id, {})
+        contents = session.get("contents", [])
+        time_list = session.get("time_list", [])
+        
         if session_id not in lecture_states[self.lecture_id][connectrobot]["sessions"]:
             selectedLanguageName = lecture_states[self.lecture_id].get("selectedLanguageName", "English")
             lecture_states[self.lecture_id][connectrobot]["sessions"][session_id] = {
                 "is_active": True,
                 "selectedLanguageName": selectedLanguageName,
                 "websocket": websocket,
-                "contents": contents,
-                "time_list": time_list,
+                "contents": contents,        # ✅ Use local session content
+                "time_list": time_list,     # ✅ Use local session timing
             }
-        self.trigger("ev_start_lecture") 
+        self.trigger("ev_start_lecture")
 
     def on_start_lecture(self):
         logger.info("Lecture started!!!!!!!")
@@ -404,60 +385,43 @@ class LectureStateMachine:
         idx,
         mgr: ConnectionManager = Depends(get_conn_mgr),
     ) -> None:
-        """Enter static content state"""
+        """Enter static content state - Now uses centralized audio dispatch service"""
         from main import chat_histories, MAX_HISTORY_LENGTH
+        from app.services.audio_dispatch_service import audio_dispatch_service
+        
         self.trigger("ev_enter_content")
         logger.info(f"Lecture {self.lecture_id}: Entering static content state.")
         session_id = str(websocket.client)
         selectedLanguageName = lecture_state["selectedLanguageName"]
-        audio_stream = generate_audio_stream(data.get(f"{selectedLanguageName}Text"), selectedLanguageName)
 
-        audio_length = get_audio_length(audio_stream)
-        audio_stream.seek(0)
-        # audio_base64 = base64.b64encode(audio_stream.read()).decode("utf-8")
-        audio_bytes = audio_stream.read()  # Read the audio as bytes
-        audio_chunks = chunk_audio(audio_bytes, CHUNK_SIZE)
+        # Send lesson event first
+        await websocket.send_text(json.dumps({"type": "lesson_event", "text": "CONTENT", "index": idx}))
 
-        logger.info("connectrobot: %s", connectrobot)
-        connected_audio_clients = get_connected_audio_clients(connectrobot)
-           
-        # Check if the WebSocket is still open by sending a ping
-        is_websocket_alive = True
-        try:
-            await connected_audio_clients.send_text(json.dumps({"type": "ping"}))
-        except Exception as e:
-            is_websocket_alive = False
-            logger.warning(f"WebSocket is not connected. Skipping message send. Error: {e}")
-
+        # Handle image to TV devices
         extract_image = data.get("image")
-        # lesson_image = 'images/' + extract_image
         lesson_image = extract_image
-
-        image_path_to_TV = lesson_image.replace("\\", "/")
+        image_path_to_TV = lesson_image.replace("\\", "/") if lesson_image else ""
         
-        await send_image_to_devices(connectrobot, db, image_path_to_TV, logger)
+        if image_path_to_TV:
+            await send_image_to_devices(connectrobot, db, image_path_to_TV, logger)
 
-        if is_websocket_alive:
-            await websocket.send_text(json.dumps({"type": "lesson_event", "text": "CONTENT", "index": idx}))
-            await websocket.send_text(json.dumps({"text": data.get(f"{selectedLanguageName}Text"), "type": "static","image":data.get("image")}))
-        else:
-            # await websocket.send_text(json.dumps({"text": data.get(f"{selectedLanguageName}Text"), "audio": audio_base64, "type": "static","image":data.get("image")}))
-            for i, chunk in enumerate(audio_chunks):
-                chunk_message = {
-                    "text": data.get(f"{selectedLanguageName}Text") if i == 0 else "",
-                    "audio_chunk": chunk,  # Send each chunk with its metadata
-                    "type": "static",
-                    "image":data.get("image") if i == 0 else "",
-                    "ts": time.time()
-                }
-
-                # Log message size for monitoring
-                msg_size = len(json.dumps(chunk_message).encode('utf-8'))
-                logger.info(f"[{connectrobot}] Sending audio chunk {i+1}/{len(audio_chunks)}, message size: {msg_size:,} bytes")
-                        
-                await websocket.send_text(json.dumps({"type": "lesson_event", "text": "CONTENT", "index": idx}))
-                await websocket.send_text(json.dumps(chunk_message))
-            self.start_time = time.time()
+        # ✅ USE CENTRALIZED AUDIO DISPATCH SERVICE
+        # This replaces the old race-condition prone logic
+        dispatch_ctx = await audio_dispatch_service.dispatch_audio(
+            robot_id=connectrobot,
+            content_data=data,
+            frontend_websocket=websocket
+        )
+        
+        # Get audio length for timing (regardless of dispatch method)
+        try:
+            audio_stream = generate_audio_stream(data.get(f"{selectedLanguageName}Text"), selectedLanguageName)
+            audio_length = get_audio_length(audio_stream)
+        except Exception as e:
+            logger.warning(f"[{connectrobot}] Could not get audio length: {e}")
+            audio_length = 3.0  # Default fallback
+        
+        self.start_time = time.time()
          
         # Use chat_histories to store or retrieve conversation history
         if session_id not in chat_histories:

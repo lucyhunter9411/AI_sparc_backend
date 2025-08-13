@@ -9,8 +9,6 @@ MAX_TOKENS = 32000
 MAX_HISTORY = 5                       # or whatever value you had before
 conversations = defaultdict(lambda: deque(maxlen=MAX_HISTORY))
 
-contents = []
-time_list = []
 hand_raising_count = []
 name_array = []
 selected_student = []
@@ -24,20 +22,6 @@ audio_source = []
 closest_image_path = []
 qna_flag = []
 topic_title = []
-
-def set_contents(value):
-    global contents
-    contents = value
-
-def get_contents():
-    return contents
-
-def set_time_list(value):
-    global time_list
-    time_list = value
-
-def get_time_list():
-    return time_list
 
 def set_hand_raising_count(robot_id, value):
     global hand_raising_count
