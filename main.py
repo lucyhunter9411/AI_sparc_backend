@@ -45,6 +45,17 @@ import requests
 import tempfile
 import uuid
 
+# --- Azure Blob Storage Settings--------------
+IMAGE_DIR = os.getenv("IMAGE_DIR", "app/vector_db/vectorstore/images")
+BLOB_STORAGE_UPLOAD_FOLDER = os.getenv("BLOB_STORAGE_UPLOAD_FOLDER")
+AZURE_CONNECTION_STRING = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
+BLOB_STORAGE_UPLOAD_DIR = os.getenv("BLOB_STORAGE_UPLOAD_DIR")
+BLOB_STORAGE_IMAGE_METADATA_FAISS_PATH = os.getenv("BLOB_STORAGE_IMAGE_METADATA_FAISS_PATH")
+BLOB_STORAGE_FAISS_DIR = os.getenv("BLOB_STORAGE_FAISS_DIR")
+BLOB_STORAGE_CONTAINER_FOLDER = os.getenv("BLOB_STORAGE_CONTAINER_FOLDER")
+BLOB_LESSON_IMAGE_FOLDER = os.getenv("BLOB_LESSON_IMAGE_FOLDER")
+BLOB_STORAGE_TEXT_FAISS_DIR = os.getenv("BLOB_STORAGE_TEXT_FAISS_DIR")
+
 # --- add just above the FastAPI() call --------------
 from contextlib import asynccontextmanager
 from langchain_community.vectorstores import FAISS
@@ -96,12 +107,8 @@ def chunk_audio(audio_data, chunk_size):
 
 if not LOCAL_MODE:
     from azure.storage.blob import BlobServiceClient, ContentSettings
-    AZURE_CONNECTION_STRING = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
-    BLOB_CONTAINER_NAME = "pdf-images"
     blob_service_client = BlobServiceClient.from_connection_string(AZURE_CONNECTION_STRING)
-    container_client = blob_service_client.get_container_client(BLOB_CONTAINER_NAME)
-    BLOB_CONTAINER_NAME = "pdf-images"
-    container_client = blob_service_client.get_container_client(BLOB_CONTAINER_NAME)
+    container_client = blob_service_client.get_container_client(BLOB_STORAGE_CONTAINER_FOLDER)
 else:
     # Optionally, set these to None for clarity
     blob_service_client = None
@@ -115,7 +122,6 @@ from app.core.database import mongo_db
 custom_prompt_template = ""
 
 DB_TEXT_FAISS_PATH_local = "app/vector_db/vectorstore/text_faiss"
-DB_TEXT_FAISS_PATH = os.getenv("DB_TEXT_FAISS_PATH")
 # EMBEDDING_MODEL    = os.getenv("EMBEDDING_MODEL")
 EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 faiss_text_db = None      # will be initialised once in lifespan
@@ -159,7 +165,7 @@ async def lifespan(app: FastAPI):
             
             try:
                 # Download index.faiss
-                faiss_url = f"{DB_TEXT_FAISS_PATH}/index.faiss"
+                faiss_url = f"{BLOB_STORAGE_TEXT_FAISS_DIR}/index.faiss"
                 logger.info(f"Downloading text FAISS index from: {faiss_url}")
                 response = requests.get(faiss_url)
                 response.raise_for_status()
@@ -168,7 +174,7 @@ async def lifespan(app: FastAPI):
                 logger.info("Text FAISS index downloaded successfully")
                 
                 # Download index.pkl
-                pkl_url = f"{DB_TEXT_FAISS_PATH}/index.pkl"
+                pkl_url = f"{BLOB_STORAGE_TEXT_FAISS_DIR}/index.pkl"
                 logger.info(f"Downloading text FAISS pkl from: {pkl_url}")
                 response = requests.get(pkl_url)
                 response.raise_for_status()
@@ -182,7 +188,7 @@ async def lifespan(app: FastAPI):
                     HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL),
                     allow_dangerous_deserialization=True,
                 )
-                logger.info("✅ FAISS text index ready (downloaded from %s).", DB_TEXT_FAISS_PATH)
+                logger.info("✅ FAISS text index ready (downloaded from %s).", BLOB_STORAGE_TEXT_FAISS_DIR)
                 
             except Exception as e:
                 logger.error(f"❌ Failed to download or load text FAISS from Azure: {e}")
@@ -651,11 +657,6 @@ async def upload_image(image: UploadFile = File(...)):
     except Exception as e:
         return JSONResponse(status_code=500, content={"message": str(e)})
 
-        
-# Azure Blob settings
-CONTAINER_NAME = "dev"
-BLOB_FOLDER = "lessons/images"
-
 @app.post("/upload/lessons/images/")
 async def upload_lesson_image(image: UploadFile = File(...)):
     if LOCAL_MODE:
@@ -674,12 +675,10 @@ async def upload_lesson_image(image: UploadFile = File(...)):
             return JSONResponse(status_code=500, content={"message": str(e)})
 
     try:
-        # ✅ Always use fresh container_client with correct container name
-        container_client = blob_service_client.get_container_client(CONTAINER_NAME)
         # Generate a unique filename
         ext = os.path.splitext(image.filename)[1]
         unique_filename = f"{uuid.uuid4().hex}{ext}"
-        blob_path = f"{BLOB_FOLDER}/{unique_filename}"
+        blob_path = f"{BLOB_LESSON_IMAGE_FOLDER}/{unique_filename}"
 
         # Upload the image to Azure Blob Storage
         blob_client = container_client.get_blob_client(blob=blob_path)
@@ -687,7 +686,7 @@ async def upload_lesson_image(image: UploadFile = File(...)):
         blob_client.upload_blob(image.file, overwrite=True, content_settings=content_settings)
 
         # Construct the public blob URL (assuming the container is public)
-        blob_url = f"https://{blob_service_client.account_name}.blob.core.windows.net/{CONTAINER_NAME}/{blob_path}"
+        blob_url = f"https://{blob_service_client.account_name}.blob.core.windows.net/{BLOB_STORAGE_CONTAINER_FOLDER}/{blob_path}"
 
         return JSONResponse(content={"imageUrl": blob_url})
     
@@ -723,9 +722,9 @@ async def upload_lesson_image_from_url(image_url: str = Form(...)):
 
     try:
         # ✅ Always use fresh container_client with correct container name
-        dest_container_client = blob_service_client.get_container_client(CONTAINER_NAME)
+        dest_container_client = blob_service_client.get_container_client(BLOB_STORAGE_CONTAINER_FOLDER)
         # Parse blob name from full URL
-        prefix = f"https://{blob_service_client.account_name}.blob.core.windows.net/{BLOB_CONTAINER_NAME}/"
+        prefix = f"https://{blob_service_client.account_name}.blob.core.windows.net/{BLOB_STORAGE_CONTAINER_FOLDER}/"
         if not image_url.startswith(prefix):
             raise HTTPException(status_code=400, detail="Invalid Azure blob URL")
 
@@ -743,7 +742,7 @@ async def upload_lesson_image_from_url(image_url: str = Form(...)):
 
         # Generate new filename
         new_filename = f"{uuid.uuid4().hex}.jpg"
-        dest_blob_path = f"{BLOB_FOLDER}/{new_filename}"
+        dest_blob_path = f"{BLOB_LESSON_IMAGE_FOLDER}/{new_filename}"
         dest_blob_client = dest_container_client.get_blob_client(dest_blob_path)
 
         # Upload converted image as JPEG
@@ -754,7 +753,7 @@ async def upload_lesson_image_from_url(image_url: str = Form(...)):
         )
 
         # Return new blob URL
-        new_blob_url = f"https://{blob_service_client.account_name}.blob.core.windows.net/{CONTAINER_NAME}/{dest_blob_path}"
+        new_blob_url = f"https://{blob_service_client.account_name}.blob.core.windows.net/{BLOB_STORAGE_CONTAINER_FOLDER}/{dest_blob_path}"
         return JSONResponse(content={"imageUrl": new_blob_url})
 
     except Exception as e:
@@ -952,10 +951,6 @@ async def deleteLecture(lectureID: str = Form(...), db=Depends(get_db)):
     return {"lecture": allLectures}
 
 # Define the absolute path for uploads
-UPLOAD_FOLDER_FAISS = os.getenv("UPLOAD_FOLDER_FAISS", "uploads")
-IMAGE_DIR = os.getenv("IMAGE_DIR", "app/vector_db/vectorstore/images")
-if not LOCAL_MODE:
-    os.makedirs(UPLOAD_FOLDER_FAISS, exist_ok=True)
 
 @app.post("/create-vector-db/v1/")
 async def create_vector_db_v1_endpoint(file_name: str = Form(...)):
@@ -973,7 +968,7 @@ async def create_vector_db_v1_endpoint(file_name: str = Form(...)):
             }
 
         else:
-            file_location = os.path.join(UPLOAD_FOLDER_FAISS, file_name)
+            file_location = os.path.join(BLOB_STORAGE_UPLOAD_DIR, file_name)
 
             # Run with the current Python interpreter path
             subprocess.Popen([sys.executable, "app/vector_db/vectorDB_generation.py", file_location])
@@ -986,8 +981,6 @@ async def create_vector_db_v1_endpoint(file_name: str = Form(...)):
         raise HTTPException(status_code=500, detail=str(e))
     
     # Define the URL for the metadata JSON
-DB_METADATA_FAISS_PATH = os.getenv("DB_METADATA_FAISS_PATH")
-UPLOAD_FOLDER_FAISS = os.getenv("UPLOAD_FOLDER_FAISS")
 @app.get("/faiss/images/")
 async def get_images():
     if LOCAL_MODE:
@@ -1010,13 +1003,13 @@ async def get_images():
             logger.error(f"Failed to load local image metadata: {e}")
             raise HTTPException(status_code=500, detail="Failed to load local image metadata")
     try:
-        response = requests.get(DB_METADATA_FAISS_PATH)
+        response = requests.get(BLOB_STORAGE_IMAGE_METADATA_FAISS_PATH)
         response.raise_for_status()  # Raise an error for bad responses
         metadata = response.json()
         image_paths = metadata.get("image_paths", [])
         descriptions = metadata.get("descriptions", [])
         images_with_descriptions = [
-            {"image_path": f"{UPLOAD_FOLDER_FAISS}/images/{path}", "description": desc}
+            {"image_path": f"{BLOB_STORAGE_FAISS_DIR}/images/{path}", "description": desc}
             for path, desc in zip(image_paths, descriptions)
         ]
         return {"images": images_with_descriptions}
@@ -1065,11 +1058,12 @@ async def upload_file(file: UploadFile = File(...)):
         contents = await file.read()
         blob_name = file.filename
 
-        # Upload to Azure Blob Storage
-        container_client.upload_blob(name=blob_name, data=contents, overwrite=True)
+        # Upload to Azure Blob Storage - files go to uploads/ directory
+        upload_blob_path = f"uploads/{blob_name}"
+        container_client.upload_blob(name=upload_blob_path, data=contents, overwrite=True)
 
         # Construct public blob URL
-        blob_url = f"https://{blob_service_client.account_name}.blob.core.windows.net/{BLOB_CONTAINER_NAME}/{blob_name}"
+        blob_url = f"https://{blob_service_client.account_name}.blob.core.windows.net/{BLOB_STORAGE_CONTAINER_FOLDER}/{upload_blob_path}"
 
         return JSONResponse(
             status_code=200,

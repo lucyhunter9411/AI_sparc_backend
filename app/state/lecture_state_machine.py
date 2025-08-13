@@ -28,13 +28,37 @@ import os
 
 from app.services.stt_service import transcribe_audio
 from app.utils.audio import generate_audio_stream, get_audio_length
-from app.services.shared_data import get_contents, get_time_list, get_hand_raising_count, get_connected_audio_clients
+from app.services.shared_data import get_contents, get_time_list, get_hand_raising_count, get_connected_audio_clients, set_qna_flag, get_qna_flag
 from app.services.vision_service import  handle_vision_data
 from app.websockets.connection_manager import ConnectionManager
 from app.api.deps import get_conn_mgr
 from app.services.tv_interface import send_image_to_devices
 
 logger = logging.getLogger(__name__)
+
+CHUNK_SIZE = os.getenv("CHUNK_SIZE")
+
+# Convert CHUNK_SIZE to an integer, with a default value if not set or invalid
+try:
+    CHUNK_SIZE = int(CHUNK_SIZE)
+except (TypeError, ValueError):
+    # Set a default value if CHUNK_SIZE is not set or is not a valid integer
+    CHUNK_SIZE = 2097152  # Example default value, adjust as needed - 2MB
+    
+def chunk_audio(audio_data, chunk_size):
+    """Split audio data into chunks with sequence numbers and total count."""
+    total_chunks = (len(audio_data) + chunk_size - 1) // chunk_size
+    chunks = []
+    for i in range(total_chunks):
+        start = i * chunk_size
+        end = start + chunk_size
+        chunk = audio_data[start:end]
+        chunks.append({
+            "sequence_number": i,
+            "total_chunks": total_chunks,
+            "data": list(chunk)
+        })
+    return chunks
 
 # ---------------------------------------------------------------------------
 # helper: single place that stores per-call runtime data
@@ -75,7 +99,7 @@ states = [
     State(name="st_exit_conf"),
     State(name="st_ai_summarize", 
          on_enter=["on_ai_summarize"],
-         on_exit=["on_next_topic"])
+         on_exit=["on_enter_conversation"])
 ]
 
 transitions = [
@@ -116,10 +140,6 @@ class LectureStateMachine:
         self.machine = Machine(model=self, states=states, transitions=transitions, initial="st_waiting")
 
     # -------------- public helper ----------------------------------------
-
-    # def print_current_state(self):
-    #     """Print the current state of the state machine."""
-    #     logger.info(f"Current state: {self.machine.state}")
 
     def set_ctx(self, **kwargs) -> None:
         """
@@ -170,7 +190,7 @@ class LectureStateMachine:
         """Transition to the next topic"""
         logger.info(f"Lecture {self.lecture_id}: Moving to the next topic.")
 
-    async def enter_student_qna(self, current_state_machine, robot_id_before, websocket, data, lecture_state, delay, retrieve_data, connectrobot):
+    async def enter_student_qna(self, current_state_machine, robot_id, websocket, data, lecture_state, delay, retrieve_data, connectrobot):
         """
         No positional arguments now – relies on `self.ctx` being set.
 
@@ -183,8 +203,8 @@ class LectureStateMachine:
         lecture_state["last_message_time"] = time.time()
         question_active = True
 
-        task2 = asyncio.create_task(self.check_question_timeout(websocket, question_active, lecture_state, delay, retrieve_data))
-        task3 = asyncio.create_task(self.check_hand_raising(current_state_machine, robot_id_before, websocket, question_active, lecture_state, connectrobot))
+        task2 = asyncio.create_task(self.check_question_timeout(websocket, robot_id, question_active, lecture_state, delay, retrieve_data))
+        task3 = asyncio.create_task(self.check_hand_raising(current_state_machine, robot_id, websocket, question_active, lecture_state, connectrobot))
 
         done, pending = await asyncio.wait([task2, task3], return_when=asyncio.FIRST_COMPLETED)
         for task in pending:
@@ -193,57 +213,46 @@ class LectureStateMachine:
         # self.trigger("ev_enter_content") 
 
 
-    async def check_hand_raising(self, current_state_machine, robot_id_before, websocket, question_active, lecture_state, connectrobot):
+    async def check_hand_raising(self, current_state_machine, robot_id, websocket, question_active, lecture_state, connectrobot):
         while question_active:
             current_count = get_hand_raising_count(connectrobot)
             logger.info(f"Current hand_raising_count: {current_count}")
             await asyncio.sleep(1)
             if current_count > 0:
                 logger.info("Someone is raising hand")
-                await handle_vision_data(current_state_machine, robot_id_before, websocket)
+                await handle_vision_data(current_state_machine, robot_id, websocket)
                 self.trigger("ev_enter_process_qna")
-
-                # answer_question = True
-                # while answer_question:
-                #     data = await websocket.receive_text()
-                #     message = json.loads(data)
-                #     if "audio" in message:
-                #         audio_path = f"{connectrobot}received_audio.wav"
-                #         if isinstance(message["audio"], str):
-                #             audio_bytes = base64.b64decode(message["audio"])
-                #         else:
-                #             logger.warning(f"⚠️ Invalid audio data format: {type(message['audio'])}")
-                #             return
-                #         if "style" in message:
-                            
-                #             with wave.open(audio_path, "wb") as wf:
-                #                 wf.setnchannels(1) 
-                #                 wf.setsampwidth(2)
-                #                 wf.setframerate(16000) 
-                #                 wf.writeframes(audio_bytes)
-
-                #             model = message["backend"]
-                #             logger.info("STT model for the interrupting student: %s", model)
-                #             #stt
-                #             text = await transcribe_audio(audio_path, model)
-                #             logger.info("Text for the interrupting student: %s", text)
-                #             await websocket.send_text(json.dumps({"questionResponse": text}))
-
-                #             # duration = await handle_user_message(websocket, lecture_state, text, connectrobot)
-                #             # await asyncio.sleep(duration)
-                #     answer_question = False
-                self.trigger("ev_exit_process_qna")        
+                if hasattr(self.machine, 'state') and self.machine.state == "st_process_qna":
+                    self.trigger("ev_exit_process_qna")        
     logger.info("Exiting check_hand_raising function.")
 
-    async def check_question_timeout(self, websocket, question_active, lecture_state, delay, retrieve_data):
+    async def check_question_timeout(self, websocket, robot_id, question_active, lecture_state, delay, retrieve_data):
         from main import generate_and_send_ai_response
+        set_qna_flag(robot_id, True)
+        
+        connected_audio_clients = get_connected_audio_clients(robot_id)
+           
+        # Check if the WebSocket is still open by sending a ping
+        is_websocket_alive = True
+        try:
+            await connected_audio_clients.send_text(json.dumps({"type": "ping"}))
+        except Exception as e:
+            is_websocket_alive = False
+            logger.warning(f"WebSocket is not connected. Skipping message send. Error: {e}")
+
         while question_active:    
             selectedLanguageName = lecture_state["selectedLanguageName"]
             elapsed_time = time.time() - lecture_state["question_time_start"]
             not_interactive_time = time.time() - lecture_state["last_message_time"]
+            qna_flag = get_qna_flag(robot_id)
+            if not qna_flag:
+                lecture_state["last_message_time"] = time.time()
+                set_qna_flag(robot_id, True)
             logger.info(f"Elapsed Time:  {elapsed_time}    Not Interactive Time: {not_interactive_time}")
-            if elapsed_time > delay - 5:
-                self.trigger("ev_exit_process_qna")
+            if elapsed_time > delay * 60 - 5:
+                # Only exit process_qna if we're actually in that state
+                if hasattr(self.machine, 'state') and self.machine.state == "st_process_qna":
+                    self.trigger("ev_exit_process_qna")
                 self.trigger("ev_exit_student_qna")
                 question_active = False
                 resp = ""
@@ -255,23 +264,80 @@ class LectureStateMachine:
                     resp = "క్షమించండి, దయచేసి తదుపరిసారి ప్రశ్న అడగండి."
                 audio_stream = generate_audio_stream(resp, selectedLanguageName)
                 audio_stream.seek(0)
-                audio_base64 = base64.b64encode(audio_stream.read()).decode("utf-8")
-                await websocket.send_text(json.dumps({"text": resp, "audio": audio_base64, "type": "stop"}))
+                # audio_base64 = base64.b64encode(audio_stream.read()).decode("utf-8")
+                audio_bytes = audio_stream.read()  # Read the audio as bytes
+                
+                # Check if websocket is alive and send via audio websocket endpoint
+                if is_websocket_alive:
+                    # Import the global variables from lecture module
+                    from app.websockets.lecture import data_to_audio, lecture_to_audio
+                    
+                    # Create multi-language data structure like the websocket expects
+                    language_text_data = {}
+                    if selectedLanguageName == "English":
+                        language_text_data["EnglishText"] = resp
+                    elif selectedLanguageName == "Hindi":
+                        language_text_data["HindiText"] = resp
+                    elif selectedLanguageName == "Telugu":
+                        language_text_data["TeluguText"] = resp
+                    else:
+                        # Default to English if unknown language
+                        language_text_data["EnglishText"] = resp
+                    
+                    # Set the data for the audio websocket to pick up
+                    data_to_audio[robot_id] = {
+                        "data": language_text_data
+                    }
+                    
+                    # Only update the selectedLanguageName, don't overwrite the entire structure
+                    if robot_id not in lecture_to_audio:
+                        lecture_to_audio[robot_id] = {}
+                    lecture_to_audio[robot_id]["selectedLanguageName"] = selectedLanguageName
+                    
+                    
+                    logger.info(f"[{robot_id}] Audio data sent to websocket audio endpoint")
+                    await websocket.send_text(json.dumps({"text": resp, "type": "stop"}))
+                else:
+                    # Fallback to original method - send via regular websocket
+                    audio_chunks = chunk_audio(audio_bytes, CHUNK_SIZE)
+                    for i, chunk in enumerate(audio_chunks):
+                        chunk_message = {
+                            "text": resp if i == 0 else "",
+                            "audio_chunk": chunk,  # Send each chunk with its metadata
+                            "type": "stop"
+                        }
+                        await websocket.send_text(json.dumps(chunk_message))
+
+                
+                # audio_chunks = chunk_audio(audio_bytes, CHUNK_SIZE)
+                # for i, chunk in enumerate(audio_chunks):
+                #     chunk_message = {
+                #         "text": resp if i == 0 else "",
+                #         "audio_chunk": chunk,  # Send each chunk with its metadata
+                #         "type": "stop"
+                #     }
+                #     await websocket.send_text(json.dumps(chunk_message))
                 await asyncio.sleep(5)
-                self.trigger("ev_to_conducting")
+                await websocket.send_text(json.dumps({"type": "lesson_event", "text": "QNA_ENDED"})) 
+                self.trigger("ev_init")
                 break
 
-            elif elapsed_time < delay-20 and not_interactive_time > 120:
-                self.trigger("ev_exit_process_qna")
+            elif elapsed_time < delay * 60 - 20 and not_interactive_time > 60:
+                # Only exit process_qna if we're actually in that state
+                if hasattr(self.machine, 'state') and self.machine.state == "st_process_qna":
+                    self.trigger("ev_exit_process_qna")
                 self.trigger("ev_exit_student_qna")
                 self.trigger("ev_ai_summarize")
+                await websocket.send_text(json.dumps({"type": "lesson_event", "text": "SUMMARIZE_STARTED"}))
                 question_active = False
-                remaining_time = delay - int(elapsed_time)
+                remaining_time = delay * 60 - int(elapsed_time)
                 before = time.time()
-                await generate_and_send_ai_response(websocket, lecture_state, retrieve_data, remaining_time)
+                await generate_and_send_ai_response(websocket, lecture_state, retrieve_data, remaining_time, is_websocket_alive, robot_id)
                 logger.info(f"Remaining: {remaining_time}    Generation: {int(time.time() - before)}")
                 await asyncio.sleep(remaining_time-int(time.time() - before))
-                self.trigger("ev_to_conducting")
+                await websocket.send_text(json.dumps({"type": "lesson_event", "text": "SUMMARIZE_ENDED"}))
+                await websocket.send_text(json.dumps({"type": "lesson_event", "text": "QNA_ENDED"})) 
+                self.trigger("ev_init")
                 break
 
             await asyncio.sleep(1)
@@ -335,6 +401,7 @@ class LectureStateMachine:
         websocket,
         connectrobot, 
         db,
+        idx,
         mgr: ConnectionManager = Depends(get_conn_mgr),
     ) -> None:
         """Enter static content state"""
@@ -347,7 +414,9 @@ class LectureStateMachine:
 
         audio_length = get_audio_length(audio_stream)
         audio_stream.seek(0)
-        audio_base64 = base64.b64encode(audio_stream.read()).decode("utf-8")
+        # audio_base64 = base64.b64encode(audio_stream.read()).decode("utf-8")
+        audio_bytes = audio_stream.read()  # Read the audio as bytes
+        audio_chunks = chunk_audio(audio_bytes, CHUNK_SIZE)
 
         logger.info("connectrobot: %s", connectrobot)
         connected_audio_clients = get_connected_audio_clients(connectrobot)
@@ -364,17 +433,31 @@ class LectureStateMachine:
         # lesson_image = 'images/' + extract_image
         lesson_image = extract_image
 
-        # base_url = os.getenv("base_url")
-        # image_path_to_TV = base_url + lesson_image.replace("\\", "/")
         image_path_to_TV = lesson_image.replace("\\", "/")
         
         await send_image_to_devices(connectrobot, db, image_path_to_TV, logger)
 
         if is_websocket_alive:
+            await websocket.send_text(json.dumps({"type": "lesson_event", "text": "CONTENT", "index": idx}))
             await websocket.send_text(json.dumps({"text": data.get(f"{selectedLanguageName}Text"), "type": "static","image":data.get("image")}))
         else:
-            await websocket.send_text(json.dumps({"text": data.get(f"{selectedLanguageName}Text"), "audio": audio_base64, "type": "static","image":data.get("image")}))
-        self.start_time = time.time()
+            # await websocket.send_text(json.dumps({"text": data.get(f"{selectedLanguageName}Text"), "audio": audio_base64, "type": "static","image":data.get("image")}))
+            for i, chunk in enumerate(audio_chunks):
+                chunk_message = {
+                    "text": data.get(f"{selectedLanguageName}Text") if i == 0 else "",
+                    "audio_chunk": chunk,  # Send each chunk with its metadata
+                    "type": "static",
+                    "image":data.get("image") if i == 0 else "",
+                    "ts": time.time()
+                }
+
+                # Log message size for monitoring
+                msg_size = len(json.dumps(chunk_message).encode('utf-8'))
+                logger.info(f"[{connectrobot}] Sending audio chunk {i+1}/{len(audio_chunks)}, message size: {msg_size:,} bytes")
+                        
+                await websocket.send_text(json.dumps({"type": "lesson_event", "text": "CONTENT", "index": idx}))
+                await websocket.send_text(json.dumps(chunk_message))
+            self.start_time = time.time()
          
         # Use chat_histories to store or retrieve conversation history
         if session_id not in chat_histories:

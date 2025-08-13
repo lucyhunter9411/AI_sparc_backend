@@ -17,11 +17,11 @@ logging.basicConfig(level=logging.INFO)
 
 # Azure config
 AZURE_CONNECTION_STRING = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
-CONTAINER_NAME = "pdf-images"
-BLOB_FOLDER = "image_faiss"
+BLOB_STORAGE_CONTAINER_FOLDER = os.getenv("BLOB_STORAGE_CONTAINER_FOLDER")
+BLOB_STORAGE_IMAGE_FAISS_FOLDER = os.getenv("BLOB_STORAGE_IMAGE_FAISS_FOLDER")
 
 blob_service_client = BlobServiceClient.from_connection_string(AZURE_CONNECTION_STRING)
-container_client = blob_service_client.get_container_client(CONTAINER_NAME)
+container_client = blob_service_client.get_container_client(BLOB_STORAGE_CONTAINER_FOLDER)
 
 def download_blob_to_temp(blob_name):
     local_path = os.path.join(tempfile.gettempdir(), os.path.basename(blob_name))
@@ -96,8 +96,8 @@ async def update_image_embedding_on_blob(target_image_path, image_url, new_descr
     logger.info("Updating image embedding and description in Azure...")
 
     # Step 1: Download existing files from Azure
-    index_blob = f"{BLOB_FOLDER}/index.faiss"
-    meta_blob = f"{BLOB_FOLDER}/image_faiss_metadata.json"
+    index_blob = f"{BLOB_STORAGE_IMAGE_FAISS_FOLDER}/index.faiss"
+    meta_blob = f"{BLOB_STORAGE_IMAGE_FAISS_FOLDER}/image_faiss_metadata.json"
     local_index_path = download_blob_to_temp(index_blob)
     local_meta_path = download_blob_to_temp(meta_blob)
 

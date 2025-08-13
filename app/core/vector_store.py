@@ -7,7 +7,8 @@ from app.core.config import get_settings
 import os
 
 settings = get_settings()
-DB_TEXT_FAISS_PATH = os.getenv("DB_TEXT_FAISS_PATH")
+BLOB_STORAGE_TEXT_FAISS_DIR = os.getenv("BLOB_STORAGE_TEXT_FAISS_DIR")
+# EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL")
 EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 
 @asynccontextmanager    
@@ -16,7 +17,7 @@ async def faiss_text_db():
     Contextmanager to load and provide the FAISS vector store.
     """
     store = FAISS.load_local(
-        DB_TEXT_FAISS_PATH,
+        BLOB_STORAGE_TEXT_FAISS_DIR,
         HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL),
         allow_dangerous_deserialization=True
     )
